@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    container_name: sirius_bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./sessions:/app/sessions
+      - ./logs:/app/logs
+    ports:
+      - "127.0.0.1:8080:8080"
+    stop_grace_period: 30s
