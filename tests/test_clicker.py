@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from db.repositories.clicker_day import ClickerDayRepo
 from db.repositories.user import UserRepo
-from services.clicker import CaptchaStatus, ClickerService, ClickStatus
+from services.clicker import CaptchaStatus, ClickerService, ClickStatus, _today
 from services.settings import SettingsService
 from tests.helpers import create_user
-
-
-def _today():
-    return datetime.now(tz=timezone.utc).date()
 
 
 async def test_bronze_daily_limit_is_40_and_total_is_4(session):

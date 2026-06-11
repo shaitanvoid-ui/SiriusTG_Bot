@@ -95,14 +95,14 @@ async def _start_scheduler(bot: Bot) -> AsyncIOScheduler:
         interval_hours = await settings_svc.get_int("subrecheck.interval_hours", 6)
         tasks_interval_min = await settings_svc.get_int("tasks_recheck.interval_min", 5)
         backup_hours = await settings_svc.get_int("backup.interval_hours", 6)
-        digest_hour = await settings_svc.get_int("digest.hour_utc", 9)
+        digest_hour_msk = await settings_svc.get_int("digest.hour_msk", 9)
         support_check_hours = await settings_svc.get_int("support.autoclose_check_hours", 6)
     scheduler = AsyncIOScheduler(timezone="UTC")
     register_subrechecker_jobs(scheduler, bot, interval_hours=interval_hours)
     register_tasks_rechecker_jobs(scheduler, bot, interval_min=tasks_interval_min)
     register_leaderboard_payout_jobs(scheduler, bot)
     register_db_backup_jobs(scheduler, bot, interval_hours=backup_hours)
-    register_daily_digest_jobs(scheduler, bot, hour_utc=digest_hour)
+    register_daily_digest_jobs(scheduler, bot, hour_msk=digest_hour_msk)
     register_support_autoclose_jobs(scheduler, bot, interval_hours=support_check_hours)
     scheduler.add_listener(_make_job_error_listener(bot), EVENT_JOB_ERROR)
     scheduler.start()
@@ -111,7 +111,7 @@ async def _start_scheduler(bot: Bot) -> AsyncIOScheduler:
         interval_hours=interval_hours,
         tasks_interval_min=tasks_interval_min,
         backup_hours=backup_hours,
-        digest_hour=digest_hour,
+        digest_hour_msk=digest_hour_msk,
     )
     return scheduler
 

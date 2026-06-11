@@ -1,12 +1,12 @@
 """Агрегаты для админ-дашборда (Этап 9).
 
-Только чтение: сводка по юзерам, обязательствам и активности за UTC-сегодня.
+Только чтение: сводка по юзерам, обязательствам и активности за московские сутки.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,14 +21,15 @@ from db.models import (
     WheelSpin,
 )
 from db.repositories.user import UserRepo
+from utils.tz import msk_day_start_utc, today_msk
 
 
 def _today() -> date:
-    return datetime.now(tz=timezone.utc).date()
+    return today_msk()
 
 
 def _today_start() -> datetime:
-    return datetime.combine(_today(), time.min, tzinfo=timezone.utc)
+    return msk_day_start_utc()
 
 
 @dataclass(frozen=True)

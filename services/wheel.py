@@ -1,6 +1,6 @@
 """Колесо фортуны.
 
-  - 1 бесплатное вращение в сутки (UTC-день), лимит из settings.
+  - 1 бесплатное вращение в сутки (московский день), лимит из settings.
   - Платное вращение: списываем `wheel.cost`, крутим, начисляем приз.
   - Секторы и веса — в `wheel.prizes` (матожидание держим < cost).
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from db.repositories.action_log import ActionLogRepo
 from db.repositories.user import UserRepo
 from db.repositories.wheel_spin import WheelSpinRepo
 from services.settings import SettingsService
+from utils.tz import today_msk
 
 
 log = get_logger(__name__)
@@ -63,7 +64,8 @@ class WheelResult:
 
 
 def _today() -> date:
-    return datetime.now(tz=timezone.utc).date()
+    """День колеса — московские сутки."""
+    return today_msk()
 
 
 class WheelService:

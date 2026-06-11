@@ -32,6 +32,7 @@ from locales.ru import T
 from services.partner import PartnerService, PayoutRequestStatus
 from services.settings import SettingsService
 from utils.links import get_bot_username
+from utils.tz import fmt_date
 from utils.ui import stars
 
 
@@ -519,7 +520,7 @@ async def cb_history(
                 status=status_icons.get(p.status, "•"),
                 stars=stars(p.amount_stars),
                 rub=f"{p.amount_rub:.2f}",
-                date=p.created_at.strftime("%d.%m.%Y") if p.created_at else "—",
+                date=fmt_date(p.created_at) if p.created_at else "—",
             )
             for p in payouts
         )

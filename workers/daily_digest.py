@@ -1,7 +1,7 @@
 """daily_digest: ежедневная сводка метрик в LOG_CHANNEL_ID (Этап 13).
 
-Раз в сутки в `digest.hour_utc` (default 9:00 UTC) отправляем в лог-канал
-короткий дайджест: юзеры, обязательства, активность за UTC-сегодня.
+Раз в сутки в `digest.hour_msk` (default 09:00 МСК) отправляем в лог-канал
+короткий дайджест: юзеры, обязательства, активность за московские сутки.
 Данные — из AdminStatsService (та же сводка, что в админ-дашборде).
 """
 
@@ -18,6 +18,7 @@ from db.session import SessionLocal
 from locales.ru import T
 from services.admin_stats import AdminStatsService, DashboardStats
 from services.settings import SettingsService
+from utils.tz import MSK_OFFSET_HOURS
 
 
 log = get_logger(__name__)
@@ -53,10 +54,12 @@ async def run_daily_digest(bot: Bot) -> None:
         log.exception("daily_digest_send_failed")
 
 
-def register_jobs(scheduler: AsyncIOScheduler, bot: Bot, *, hour_utc: int) -> None:
+def register_jobs(scheduler: AsyncIOScheduler, bot: Bot, *, hour_msk: int) -> None:
+    # планировщик живёт в UTC — конвертируем московский час
+    hour_utc = (max(0, min(23, hour_msk)) - MSK_OFFSET_HOURS) % 24
     scheduler.add_job(
         run_daily_digest,
-        CronTrigger(hour=max(0, min(23, hour_utc)), minute=0),
+        CronTrigger(hour=hour_utc, minute=0),
         kwargs={"bot": bot},
         id="daily_digest",
         replace_existing=True,

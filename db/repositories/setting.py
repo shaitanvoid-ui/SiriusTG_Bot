@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,3 +71,8 @@ class SettingRepo(BaseRepo):
     async def all(self) -> list[Setting]:
         res = await self.session.execute(select(Setting).order_by(Setting.key))
         return list(res.scalars().all())
+
+    async def delete(self, key: str) -> bool:
+        """Физическое удаление устаревшего ключа (settings — не пользовательские данные)."""
+        res = await self.session.execute(sa_delete(Setting).where(Setting.key == key))
+        return bool(res.rowcount)

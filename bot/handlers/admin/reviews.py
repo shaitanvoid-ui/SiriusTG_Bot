@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime
 
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message
@@ -19,6 +18,7 @@ from db.repositories.action_log import ActionLogRepo
 from services.reviews import ReviewService
 from services.settings import SettingsService
 from locales.ru import T
+from utils.tz import fmt_dt
 
 
 router = Router(name="admin_reviews")
@@ -53,7 +53,7 @@ async def cb_reviews_list(callback: CallbackQuery, session: AsyncSession) -> Non
         user_info=user_info,
         rating_stars=f"{stars} {review.rating}/5",
         is_anon=T.review_mod_anonymous if review.is_anonymous else T.review_mod_public,
-        date=datetime.fromisoformat(str(review.created_at)).strftime("%d.%m %H:%M"),
+        date=fmt_dt(review.created_at),
         text=review.text[:300],
     )
     with suppress(Exception):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router, html
 from aiogram.fsm.context import FSMContext
@@ -16,6 +15,7 @@ from db.repositories.user import UserRepo
 from locales.ru import T
 from services.level import LevelService
 from services.settings import SettingsService
+from utils.tz import now_msk
 from utils.ui import brand_header, progress_bar, stars
 
 
@@ -32,10 +32,9 @@ def greeting_for_hour(hour: int) -> str:
     return T.greeting_night
 
 
-def _greeting(utc_offset_hours: int) -> str:
-    """Приветствие по местному времени аудитории (смещение — из settings)."""
-    hour = (datetime.now(tz=timezone.utc) + timedelta(hours=utc_offset_hours)).hour
-    return greeting_for_hour(hour)
+def _greeting() -> str:
+    """Приветствие по московскому времени."""
+    return greeting_for_hour(now_msk().hour)
 
 
 # ---------- core renderer ----------
@@ -48,7 +47,6 @@ async def _build_caption(session: AsyncSession, user: User) -> tuple[str, str | 
     brand_tagline = await settings_svc.get_str("brand.tagline", "Stars Hub")
     channel_url = await settings_svc.get_str("channel.url", "")
     ref_reward = await settings_svc.get_float("ref.reward", 3.0)
-    utc_offset = await settings_svc.get_int("brand.utc_offset_hours", 3)
 
     info = await level_svc.compute(user.confirmed_ref_count)
     bar = progress_bar(info.progress_current, info.progress_total)
@@ -63,7 +61,7 @@ async def _build_caption(session: AsyncSession, user: User) -> tuple[str, str | 
     name = html.quote(user.first_name or "друг")
     caption = T.menu_caption.format(
         brand=brand_header(brand_name, brand_tagline),
-        greeting=_greeting(utc_offset),
+        greeting=_greeting(),
         name=name,
         balance=stars(user.balance),
         level_emoji=info.emoji,

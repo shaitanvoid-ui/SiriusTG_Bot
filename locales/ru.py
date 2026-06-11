@@ -694,7 +694,7 @@ T = SimpleNamespace(
         "╭  Балансы          <b>{balance_total}</b>\n"
         "╰  Долги            <b>{debt_total}</b>\n"
         "\n"
-        "❖  <b>СЕГОДНЯ (UTC)</b>\n"
+        "❖  <b>СЕГОДНЯ (МСК)</b>\n"
         "╭  Тапов            <b>{clicks_today}</b>\n"
         "│  Бонусов          <b>{bonuses_today}</b>\n"
         "│  Спинов колеса    <b>{spins_today}</b>\n"
@@ -711,7 +711,7 @@ T = SimpleNamespace(
         "╭  sub_rechecker      каждые <b>{sub_interval}ч</b>\n"
         "│  tasks_rechecker    каждые <b>{tasks_interval}м</b>\n"
         "│  ref_maturation     ежечасно\n"
-        "╰  top_payout         пн 00:05 UTC\n"
+        "╰  top_payout         пн 03:05 МСК\n"
         "\n"
         "❖  <b>USERBOT</b>\n"
         "   {userbot_state}\n"
@@ -1790,14 +1790,14 @@ T = SimpleNamespace(
     admin_sup_already_closed_alert="⚠️ Тикет уже закрыт.",
 
     # ---------- Этап 13: бэкапы, дайджест, алерты ----------
-    log_backup_caption="🗄 Бэкап БД · {stamp} UTC · {size_kb} КБ",
+    log_backup_caption="🗄 Бэкап БД · {stamp} МСК · {size_kb} КБ",
     log_daily_digest=(
         "📊 <b>Дайджест за сутки</b>\n"
         "━━━━━━━━━━━━━━━\n"
         "👥 Юзеров: <b>{users_total}</b> (+{users_new_today} сегодня, прошли гейт {users_passed})\n"
         "💎 Обязательства: <b>{balance_total}⭐</b> · долги {debt_total}⭐\n"
         "━━━━━━━━━━━━━━━\n"
-        "Сегодня (UTC): 👆 {clicks_today} тапов · 🎁 {bonuses_today} бонусов · "
+        "Сегодня (МСК): 👆 {clicks_today} тапов · 🎁 {bonuses_today} бонусов · "
         "🎡 {spins_today} спинов\n"
         "🎯 {tasks_today} заданий · 👥 {refs_today} рефералов · 💝 {reviews_pending} отзывов в очереди"
     ),

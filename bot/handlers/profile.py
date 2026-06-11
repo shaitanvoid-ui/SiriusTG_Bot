@@ -16,6 +16,7 @@ from services.level import LevelService
 from services.partner import PartnerService
 from services.referral import ReferralService
 from services.settings import SettingsService
+from utils.tz import fmt_date
 from utils.ui import progress_bar, stars
 
 
@@ -25,7 +26,7 @@ router = Router(name="profile")
 def _format_join_date(user: User) -> str:
     if user.created_at is None:
         return "—"
-    return user.created_at.strftime("%d.%m.%Y")
+    return fmt_date(user.created_at)
 
 
 async def _render_caption(session: AsyncSession, user: User) -> str:

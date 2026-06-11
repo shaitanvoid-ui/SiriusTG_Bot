@@ -24,6 +24,7 @@ from db.repositories.user import UserRepo
 from services.level import LevelInfo, LevelService
 from services.settings import SettingsService
 from utils.captcha import EMOJI_POOL
+from utils.tz import today_msk
 
 
 CLICKER_HINT_COUNT: int = 3   # сколько эмодзи в подсказке
@@ -88,8 +89,9 @@ def _now_ms() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
 
 
-def _today_utc():
-    return datetime.now(tz=timezone.utc).date()
+def _today():
+    """День кликера — московские сутки."""
+    return today_msk()
 
 
 def _gen_mini_captcha() -> tuple[str, tuple[str, ...], tuple[str, ...], str]:
@@ -126,7 +128,7 @@ class ClickerService:
         self, user: User, *, cap_min: int, cap_max: int
     ) -> ClickerDay:
         """Достаёт/создаёт ряд на сегодня, инициализирует threshold капчи."""
-        day_row = await ClickerDayRepo(self.session).get_or_create(user.id, _today_utc())
+        day_row = await ClickerDayRepo(self.session).get_or_create(user.id, _today())
         if day_row.captcha_threshold <= 0:
             day_row.captcha_threshold = random.SystemRandom().randint(cap_min, cap_max)
         return day_row

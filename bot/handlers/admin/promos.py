@@ -24,6 +24,7 @@ from db.models import Promo
 from db.repositories.promo import PromoRepo
 from locales.ru import T
 from services.promo import normalize_code
+from utils.tz import FMT_DATE_TIME, fmt_dt
 from utils.ui import stars
 
 
@@ -70,10 +71,7 @@ def _format_card(p: Promo) -> str:
     if p.expires_at is None:
         expires = T.admin_promo_expires_never
     else:
-        exp = p.expires_at
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        expires = exp.strftime("%d.%m.%Y %H:%M UTC")
+        expires = fmt_dt(p.expires_at, FMT_DATE_TIME) + " МСК"
     if p.max_activations == 0:
         usage = T.admin_promo_usage_unlimited.format(used=p.used_count)
     else:

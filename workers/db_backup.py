@@ -11,7 +11,6 @@ import asyncio
 import os
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -24,6 +23,7 @@ from core.logger import get_logger
 from db.session import SessionLocal
 from locales.ru import T
 from services.settings import SettingsService
+from utils.tz import now_msk
 
 
 log = get_logger(__name__)
@@ -75,7 +75,7 @@ async def run_db_backup(bot: Bot) -> None:
 
     dst = await make_backup_file(src)
     try:
-        stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d_%H-%M")
+        stamp = now_msk().strftime("%Y-%m-%d_%H-%M")
         size_kb = os.path.getsize(dst) // 1024
         try:
             await bot.send_document(

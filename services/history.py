@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ActionLog, User
 from db.repositories.action_log import ActionLogRepo
 from services.settings import SettingsService
+from utils.tz import fmt_dt
 
 # action → (эмодзи, название). Сумма считается в _amount_of.
 _RENDER: dict[str, tuple[str, str]] = {
@@ -38,7 +38,7 @@ class HistoryEntry:
     emoji: str
     title: str
     amount: float  # знаковая: + начисление, − списание
-    when: str      # «10.06 14:32» в местном времени аудитории
+    when: str      # «10.06 14:32» по Москве
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,6 @@ class HistoryService:
     async def page_for(self, user: User, page: int) -> HistoryPage:
         """Страница ленты (page с 1). Пустая лента — entries=[] и 1 страница."""
         page_size = await self.settings.get_int("history.page_size", 8)
-        utc_offset = await self.settings.get_int("brand.utc_offset_hours", 3)
 
         total = await self.log_repo.count_for_user(user.tg_id, HISTORY_ACTIONS)
         total_pages = max(1, -(-total // page_size))
@@ -106,13 +105,12 @@ class HistoryService:
         for row in rows:
             payload = _payload_of(row)
             emoji, _ = _RENDER[row.action]
-            local_dt = row.created_at + timedelta(hours=utc_offset)
             entries.append(
                 HistoryEntry(
                     emoji=emoji,
                     title=_title_of(row.action, payload),
                     amount=round(_amount_of(row.action, payload), 2),
-                    when=local_dt.strftime("%d.%m %H:%M"),
+                    when=fmt_dt(row.created_at),
                 )
             )
         return HistoryPage(entries=entries, page=page, total_pages=total_pages)

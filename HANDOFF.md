@@ -15,6 +15,14 @@
 
 ### Состояние: Этапы 1-6, 8-11, 13 ЗАВЕРШЕНЫ. Бот запущен, polling активен, **132 теста зелёных.**
 
+### ✅ Московское время ВЕЗДЕ (2026-06-11, по требованию юзера) + GitHub
+- **`utils/tz.py` — единая точка истины**: `MSK` (UTC+3, без DST), `now_msk/today_msk/to_msk/fmt_dt/fmt_date/msk_day_start_utc`. Хранение в БД осталось UTC (`db.base.utcnow` не трогать!), всё видимое и все дневные границы — МСК.
+- **Дневные границы по МСК**: бонус (`services/bonus._today`), кликер (`services/clicker._today`, бывш. `_today_utc`), колесо (`services/wheel._today`), статистика дашборда/дайджеста (`services/admin_stats`, SQL-сравнения через `msk_day_start_utc` — ВСЕГДА биндить UTC-aware, иначе кривое строковое сравнение в SQLite).
+- **Отображение дат через `tz.fmt_dt/fmt_date`**: профиль, история, поддержка (юзер+админ), админ-юзеры, админ-отзывы, админ-промо (метка «МСК»), заявки партнёров, история выплат партнёра, штамп бэкапа. Приветствие меню — `now_msk().hour`.
+- **Settings**: ключ `brand.utc_offset_hours` УДАЛЁН (и из DEFAULTS, и из реальной БД), `digest.hour_utc` → **`digest.hour_msk`** (=9, конвертация в UTC в `daily_digest.register_jobs`). `SettingRepo.delete()` добавлен. FAQ про бонус: «полночь по Москве».
+- Тесты: + `tests/test_tz.py` (6). **Весь suite 138 зелёных.**
+- **GitHub**: репозиторий создан (см. секцию ниже), секреты вычищены из HANDOFF (`BOT_TOKEN`/`FERNET_KEY` — только в локальном `.env`), README в стиле Elite.
+
 ### ✅ Этап 11 (поддержка + уведомления + история) ВЫПОЛНЕН 2026-06-11
 - **БД (миграция 0009, применена):** `support_tickets.status` (new/in_progress/awaiting/closed) + `closed_at`, новая таблица `support_messages` (тред), `users.notify_prefs` (JSON-преференции DM).
 - **Поддержка, юзер (`bot/handlers/support.py`, `sup:*`):** хаб «💬 Поддержка» (кнопка в Помощи ожила) → FAQ из settings `support.faq` (5 вопросов, правится через Экономику) → FSM нового вопроса (лимиты `support.min/max_text_length`, антиспам `support.max_tickets_per_hour`=3/час) → «Мои обращения» с перепиской, «Дописать», «Закрыть». Сервис `services/support.py` (`SupportService`, `render_thread`, `make_subject`). Жизненный цикл: NEW → (ответ админа) AWAITING → (реплика юзера) IN_PROGRESS → CLOSED.

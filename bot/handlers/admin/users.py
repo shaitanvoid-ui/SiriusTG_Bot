@@ -19,6 +19,7 @@ from db.models import User
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.user import UserRepo
 from locales.ru import T
+from utils.tz import fmt_date, fmt_dt
 from utils.ui import stars
 
 
@@ -36,7 +37,7 @@ async def _render_card(message, session: AsyncSession, user: User) -> None:
         actions = "\n".join(
             T.admin_user_action_row.format(
                 action=html.quote(l.action),
-                when=l.created_at.strftime("%d.%m %H:%M") if l.created_at else "—",
+                when=fmt_dt(l.created_at) if l.created_at else "—",
             )
             for l in logs
         )
@@ -57,7 +58,7 @@ async def _render_card(message, session: AsyncSession, user: User) -> None:
         banned="🚫" if user.is_banned else _NO,
         shadow="👻" if user.is_shadow_banned else _NO,
         actions=actions,
-        created=user.created_at.strftime("%d.%m.%Y") if user.created_at else "—",
+        created=fmt_date(user.created_at) if user.created_at else "—",
     )
     with suppress(Exception):
         await message.edit_text(text, reply_markup=kb_user_card(user))

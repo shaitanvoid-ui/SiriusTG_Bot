@@ -1,7 +1,7 @@
 """Ежедневный бонус + streak.
 
 Правила (всё из settings, не хардкодом):
-  - 1 бонус в сутки (UTC-день). Повтор — ALREADY.
+  - 1 бонус в сутки (московский день). Повтор — ALREADY.
   - Размер = ступень streak из `bonus.streak` (день→⭐), пол = `bonus.base`.
   - Пропустил день — streak сбрасывается на 1.
   - Бонус требует рефку в bio (`bonus.bio_required`, по умолчанию вкл).
@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from enum import StrEnum
 from typing import Awaitable, Callable
 
@@ -24,6 +24,7 @@ from db.repositories.action_log import ActionLogRepo
 from db.repositories.daily_bonus_log import DailyBonusLogRepo
 from db.repositories.user import UserRepo
 from services.settings import SettingsService
+from utils.tz import today_msk
 
 
 log = get_logger(__name__)
@@ -67,7 +68,8 @@ class BonusResult:
 
 
 def _today() -> date:
-    return datetime.now(tz=timezone.utc).date()
+    """День бонуса — московские сутки (хранение в БД остаётся UTC)."""
+    return today_msk()
 
 
 class BonusService:

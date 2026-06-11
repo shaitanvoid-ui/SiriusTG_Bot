@@ -30,6 +30,7 @@ from db.repositories.user import UserRepo
 from locales.ru import T
 from services.partner import PartnerService
 from services.settings import SettingsService
+from utils.tz import FMT_DATE_TIME, fmt_dt
 from utils.ui import stars
 
 
@@ -326,7 +327,7 @@ async def cb_payout_card(callback: CallbackQuery, session: AsyncSession) -> None
         rate=f"{payout.rate_rub:g}",
         method=method_name,
         requisites=html.quote(payout.requisites),
-        date=payout.created_at.strftime("%d.%m.%Y %H:%M") if payout.created_at else "—",
+        date=fmt_dt(payout.created_at, FMT_DATE_TIME) if payout.created_at else "—",
     )
     with suppress(Exception):
         await callback.message.edit_text(text, reply_markup=kb_pa_payout_card(payout.id))

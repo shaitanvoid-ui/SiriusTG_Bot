@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import timedelta
 
 from aiogram import Bot, F, Router, html
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -27,8 +26,8 @@ from db.models import SupportTicket, TicketStatus
 from db.repositories.support import TicketRepo
 from db.repositories.user import UserRepo
 from locales.ru import T
-from services.settings import SettingsService
 from services.support import SupportService, render_thread
+from utils.tz import fmt_dt
 
 router = Router(name="admin_support")
 router.message.filter(IsAdmin())
@@ -101,13 +100,11 @@ async def _card_view(session: AsyncSession, ticket: SupportTicket):
     """(text, keyboard) карточки — для edit и для отправки новым сообщением."""
     user = await UserRepo(session).get_by_id(ticket.user_id)
     messages = await TicketRepo(session).list_messages(ticket.id, limit=8)
-    offset = await SettingsService(session).get_int("brand.utc_offset_hours", 3)
-    created = (ticket.created_at + timedelta(hours=offset)).strftime("%d.%m %H:%M")
     text = T.admin_sup_card.format(
         id=ticket.id,
         user_info=html.quote(user_label(user)),
         status=admin_status_label(ticket.status),
-        created=created,
+        created=fmt_dt(ticket.created_at),
         thread=render_thread(messages),
     )
     from_archive = ticket.status == TicketStatus.CLOSED.value

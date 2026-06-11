@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import timedelta
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -28,13 +27,9 @@ from db.repositories.support import TicketRepo
 from locales.ru import T
 from services.settings import SettingsService
 from services.support import CreateStatus, SupportService, render_thread
+from utils.tz import fmt_dt
 
 router = Router(name="support")
-
-
-async def _local_stamp(session: AsyncSession, dt) -> str:
-    offset = await SettingsService(session).get_int("brand.utc_offset_hours", 3)
-    return (dt + timedelta(hours=offset)).strftime("%d.%m %H:%M")
 
 
 # ---------- хаб ----------
@@ -202,7 +197,7 @@ async def _render_ticket_card(
     text = T.support_ticket_card.format(
         id=ticket.id,
         status=user_status_label(ticket.status),
-        created=await _local_stamp(session, ticket.created_at),
+        created=fmt_dt(ticket.created_at),
         thread=render_thread(messages),
     )
     with suppress(TelegramBadRequest):
@@ -281,7 +276,7 @@ async def msg_ticket_reply(
         T.support_ticket_card.format(
             id=ticket.id,
             status=user_status_label(ticket.status),
-            created=await _local_stamp(session, ticket.created_at),
+            created=fmt_dt(ticket.created_at),
             thread=render_thread(messages),
         ),
         reply_markup=kb_ticket_card(ticket),
