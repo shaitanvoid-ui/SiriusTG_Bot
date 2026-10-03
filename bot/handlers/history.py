@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,16 +13,17 @@ from bot.keyboards.history import kb_history
 from db.models import User
 from locales.ru import T
 from services.history import HistoryPage, HistoryService
+from utils.ui import stars
 
 router = Router(name="history")
 
 
 def _signed(amount: float) -> str:
     if amount > 0:
-        return f"+{amount:.2f}⭐"
+        return f"+{stars(amount)}"
     if amount < 0:
-        return f"−{abs(amount):.2f}⭐"
-    return "0.00⭐"
+        return f"−{stars(abs(amount))}"
+    return stars(0)
 
 
 def render_history(page: HistoryPage) -> str:
@@ -44,7 +45,7 @@ async def _show_page(
         await callback.answer()
         return
     page = await HistoryService(session).page_for(db_user, page_num)
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(
             render_history(page), reply_markup=kb_history(page.page, page.total_pages)
         )

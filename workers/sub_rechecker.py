@@ -108,8 +108,8 @@ async def _recheck_one(
             bot,
             T.log_ref_lost.format(
                 referrer_tg_id=rollback.referrer_tg_id,
-                amount=f"{rollback.amount:.2f}⭐",
-                debt_part=f", в долг {rollback.debt:.2f}⭐" if rollback.debt > 0 else "",
+                amount=stars(rollback.amount),
+                debt_part=T.notify_ref_lost_debt.format(debt=stars(rollback.debt)) if rollback.debt > 0 else "",
             ),
         )
     return True

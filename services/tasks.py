@@ -69,6 +69,9 @@ class TasksService:
         done_ids = await UserTaskCompletionRepo(self.session).list_completed_ids(user.id)
         items: list[TaskItem] = []
         for s in sponsors:
+            # Synthetic traps are never offered to ordinary users or linked to a channel.
+            if s.is_honeypot:
+                continue
             # лимит достигнут — скрываем
             if s.subs_limit > 0 and s.subs_counter >= s.subs_limit:
                 continue
@@ -93,6 +96,12 @@ class TasksService:
             return ClaimResult(status=TaskStatus.NOT_FOUND)
         if not sponsor.is_active or sponsor.is_required:
             return ClaimResult(status=TaskStatus.INACTIVE, sponsor_title=sponsor.title)
+        if sponsor.is_honeypot:
+            from services.antifraud import AntifraudService
+            await AntifraudService(self.session, self.settings).honeypot_hit(
+                user=user, kind="task", source_id=sponsor.id,
+            )
+            return ClaimResult(status=TaskStatus.BLOCKED, sponsor_title=sponsor.title)
         reward = from_units(settlement_units(sponsor.reward))
         if reward <= 0:
             return ClaimResult(status=TaskStatus.NO_REWARD, sponsor_title=sponsor.title)

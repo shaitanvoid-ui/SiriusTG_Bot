@@ -5,9 +5,23 @@ from __future__ import annotations
 
 def test_root_router_builds():
     from bot.handlers import get_root_router
+    from bot.middlewares.gates import (
+        CaptchaGateMiddleware,
+        SubGateMiddleware,
+        TermsGateMiddleware,
+    )
+    from bot.middlewares.navigation import NavigationStateMiddleware
 
     router = get_root_router()
     assert len(router.sub_routers) > 0
+    ready = next(child for child in router.sub_routers if child.name == "ready")
+    ready_names = {child.name for child in ready.sub_routers}
+    assert {"menu", "profile", "tasks", "bonus", "support"} <= ready_names
+    assert {"start", "terms", "captcha", "sub_gate"}.isdisjoint(ready_names)
+
+    expected = (TermsGateMiddleware, CaptchaGateMiddleware, SubGateMiddleware)
+    assert tuple(type(item) for item in ready.message.middleware) == expected
+    assert tuple(type(item) for item in ready.callback_query.middleware) == (*expected, NavigationStateMiddleware)
 
 
 def test_tasks_rechecker_importable():

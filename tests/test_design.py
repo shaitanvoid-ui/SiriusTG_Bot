@@ -41,17 +41,17 @@ def test_ladder_marks_done_next_locked():
     out = _ladder(_TIERS, streak=3)
     lines = out.split("\n")
     assert len(lines) == 5
-    assert "✅" in lines[0] and "День 1" in lines[0]
-    assert "✅" in lines[1] and "День 3" in lines[1]
-    assert "🎯" in lines[2] and "День 7" in lines[2]      # ближайшая цель
-    assert "⬜" in lines[3] and "День 14" in lines[3]
-    assert "⬜" in lines[4] and "День 30" in lines[4]
+    assert lines[0].startswith("✓") and "День 1" in lines[0]
+    assert lines[1].startswith("✓") and "День 3" in lines[1]
+    assert "следующая ступень" in lines[2] and "День 7" in lines[2]
+    assert not lines[3].startswith("✓") and "День 14" in lines[3]
+    assert not lines[4].startswith("✓") and "День 30" in lines[4]
 
 
 def test_ladder_all_done_at_max():
     out = _ladder(_TIERS, streak=30)
-    assert "🎯" not in out and "⬜" not in out
-    assert out.count("✅") == 5
+    assert "следующая ступень" not in out
+    assert out.count("✓") == 5
 
 
 def test_bonus_caption_has_ladder_placeholder():
@@ -63,7 +63,7 @@ def test_bonus_caption_has_ladder_placeholder():
 def test_wheel_spin_frames_present():
     assert len(T.wheel_spin_frames) >= 2
     for frame in T.wheel_spin_frames:
-        assert "колесо фортуны" in frame.lower()
+        assert "колесо" in frame.lower()
         # кадры — чистый текст без format-плейсхолдеров
         assert "{" not in frame
 

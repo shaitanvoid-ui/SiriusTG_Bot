@@ -31,12 +31,21 @@ router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
 USERNAME_RE = re.compile(r"^@?([A-Za-z][A-Za-z0-9_]{3,31})$")
+CHANNEL_URL_RE = re.compile(
+    r"^https?://(?:www\.)?t\.me/([A-Za-z][A-Za-z0-9_]{3,31})/?$",
+    re.IGNORECASE,
+)
+
+
+def _username_from_channel_url(url: str) -> str | None:
+    match = CHANNEL_URL_RE.fullmatch(url.strip())
+    return match.group(1) if match is not None else None
 
 
 async def _render_card(message, session: AsyncSession) -> None:
     url = await SettingsService(session).get_str("channel.url", "")
     current = f"<b>{html.quote(url)}</b>" if url else T.admin_channel_unset
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await message.edit_text(
             T.admin_channel_card.format(current=current), reply_markup=kb_channel()
         )
@@ -73,23 +82,31 @@ async def msg_set_channel(
         await message.answer(T.admin_channel_invalid)
         return
 
-    title = chat.title or username
+    canonical_username = (getattr(chat, "username", None) or username).lstrip("@")
+    title = chat.title or canonical_username
 
     # settings: кнопка «Наш канал» в меню
     settings_svc = SettingsService(session)
-    await settings_svc.set("channel.url", f"https://t.me/{username}")
+    old_channel_url = await settings_svc.get_str("channel.url", "")
 
     # авто-добавление обязательным спонсором (или реактивация существующего)
     repo = SponsorRepo(session)
-    sponsor = await repo.get_by_username(username) or (
-        await repo.get_by_chat_id(chat.id) if chat.id else None
+    sponsor = (await repo.get_by_chat_id(chat.id) if chat.id else None) or (
+        await repo.get_by_username(canonical_username)
     )
+
+    old_username = _username_from_channel_url(old_channel_url)
+    old_sponsor = await repo.get_by_username(old_username) if old_username else None
+    if old_sponsor is not None and (sponsor is None or old_sponsor.id != sponsor.id):
+        old_sponsor.is_required = False
+        old_sponsor.is_active = False
+
     if sponsor is None:
-        await repo.create(
+        sponsor = await repo.create(
             kind=SponsorKind.PUBLIC,
             title=title,
             chat_id=chat.id,
-            username=username,
+            username=canonical_username,
             is_required=True,
             is_active=True,
         )
@@ -98,6 +115,9 @@ async def msg_set_channel(
         sponsor.is_active = True
         sponsor.title = title
         sponsor.chat_id = chat.id
+        sponsor.username = canonical_username
+
+    await settings_svc.set("channel.url", f"https://t.me/{canonical_username}")
 
     await state.clear()
     await message.answer(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from services.settings import SettingsService
-from services.sponsor import SponsorService
+from services.sponsor import SponsorService, SubscriptionCheckStatus
 from services.tasks import TasksService, TaskStatus
 from tests.helpers import create_sponsor, create_user
 
@@ -53,3 +53,21 @@ async def test_claim_not_subscribed(session, monkeypatch):
     r = await svc.claim(None, user=user, sponsor_id=sponsor.id)
     assert r.status == TaskStatus.NOT_SUBSCRIBED
     assert r.balance == 0.0
+
+
+async def test_claim_check_unavailable_does_not_credit_reward(session, monkeypatch):
+    user = await create_user(session, tg_id=999000023)
+    sponsor = await create_sponsor(
+        session, title="Opt", is_required=False, reward=2.0, username="opt-unavailable"
+    )
+    svc = TasksService(session, SettingsService(session))
+
+    async def fake_check(self, bot, *, sponsor, tg_id):  # noqa: ARG001
+        return SubscriptionCheckStatus.UNAVAILABLE
+
+    monkeypatch.setattr(SponsorService, "check_one", fake_check)
+    result = await svc.claim(None, user=user, sponsor_id=sponsor.id)
+
+    assert result.status == TaskStatus.UNAVAILABLE
+    await session.refresh(user)
+    assert user.balance == 0.0

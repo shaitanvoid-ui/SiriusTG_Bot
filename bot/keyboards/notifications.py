@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.keyboards import SiriusKeyboardBuilder as InlineKeyboardBuilder
 
 from locales.ru import T
 from services.notifications import CATEGORIES
@@ -17,6 +17,6 @@ def kb_notifications(prefs: dict[str, bool]) -> InlineKeyboardMarkup:
             text=template.format(emoji=emoji, name=name),
             callback_data=f"ntf:t:{code}",
         )
-    b.button(text="◀ В профиль", callback_data="prof:open")
-    b.adjust(*([1] * (len(CATEGORIES) + 1)))
+    b.footer(text=T.btn_back_profile, callback_data="prof:open")
+    b.adjust(*([1] * len(CATEGORIES)), 2)
     return b.as_markup()

@@ -21,9 +21,10 @@ class FakeAdapter:
     def __init__(self):
         self.price, self.available, self.calls, self.error = 25, True, 0, None
         self.pause = None
+        self.kind, self.limited = "ordinary", False
 
     async def catalogue(self, force=False):
-        return (NS(id=7, title="Gift", stars=self.price, available=self.available),)
+        return (NS(id=7, title="Gift", stars=self.price, available=self.available, kind=self.kind, limited=self.limited),)
 
     async def resolve_recipient(self, tg_id, username):
         return NS(tg_id=tg_id, peer=NS(user_id=tg_id))
@@ -80,6 +81,29 @@ async def test_concurrent_confirm_single_reserve(gift_setup):
         assert await s.scalar(select(func.count()).select_from(GiftRequest)) == 1
         assert await s.scalar(select(func.count()).select_from(MoneyOperation).where(MoneyOperation.reason == "gift_reserve")) == 1
     assert adapter.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [("kind","collectible"),("limited",True)])
+async def test_collectible_hidden_and_stale_quote_cannot_reserve(gift_setup, field, value):
+    svc, adapter, uid = gift_setup
+    q = await svc.quote(101, 7)
+    setattr(adapter, field, value)
+    assert await svc.catalogue() == ()
+    with pytest.raises(GiftServiceError, match="gift_unavailable"):
+        await svc.confirm(101, q.id)
+    assert (await account(svc, uid)).reserved_units == 0 and adapter.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_queued_gift_becoming_collectible_refunds_without_payment(gift_setup):
+    svc, adapter, uid = gift_setup
+    req = await request(svc)
+    adapter.kind = "collectible"
+    await svc.process_one()
+    stored = await svc.detail(101, req.id)
+    assert stored.status == "failed" and stored.reserve_state == "released"
+    assert (await account(svc, uid)).reserved_units == 0 and adapter.calls == 0
 
 
 @pytest.mark.asyncio

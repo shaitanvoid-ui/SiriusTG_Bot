@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router, html
 from aiogram.types import CallbackQuery
@@ -73,7 +74,7 @@ async def _show(
         return
     view = await svc.get_view(period=period, viewer_user_id=user.id)
     if callback.message is not None:
-        with suppress(Exception):
+        with ignore_unchanged():
             await callback.message.edit_text(
                 _render(view), reply_markup=kb_leaderboard(view.period)
             )

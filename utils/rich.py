@@ -71,7 +71,10 @@ def render_rich_html(text: str) -> str:
             flush()
             blocks.append(protected[line])
         elif not blocks and not paragraph and "<b>" in line:
-            blocks.append(f"<h2>{line}</h2>")
+            # Native heading supplies the hierarchy; decorative prefix/suffix
+            # glyphs only compete with it on a small Telegram screen.
+            heading = re.sub(r"^[^<]*?(?=<b>)", "", line)
+            blocks.append(f"<h2>{heading}</h2>")
         elif line.startswith("❖") and "<b>" in line:
             flush()
             blocks.append(f"<h3>{line.removeprefix('❖').strip()}</h3>")

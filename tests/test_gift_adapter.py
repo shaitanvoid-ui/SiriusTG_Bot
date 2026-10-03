@@ -185,7 +185,7 @@ async def test_dialog_read_floodwait_is_safe_without_purchase(context):
 
 @pytest.mark.parametrize("values,code", [
     ({"sold_out": True}, "gift_sold_out"),
-    ({"limited": True, "availability_remains": 0, "availability_total": 1}, "gift_sold_out"),
+    ({"limited": True, "availability_remains": 0, "availability_total": 1}, "gift_unsupported"),
     ({"auction": True}, "gift_unsupported"),
     ({"limited_per_user": True, "per_user_remains": 0, "per_user_total": 1}, "gift_user_limit"),
     ({"require_premium": True}, "premium_required"),
@@ -194,6 +194,23 @@ async def test_unsupported_unavailable_and_account_requirements(context, values,
     client, adapter = context
     client.gifts = [gift(**values)]
     with pytest.raises(GiftUnavailable, match=code):
+        await adapter.prepare(77, Recipient(123, "recipient", client.recipient), 15)
+    assert not any(isinstance(r, functions.payments.SendStarsFormRequest) for r in client.requests)
+
+
+@pytest.mark.parametrize("attributes", [
+    {"limited": True, "availability_remains": 10, "availability_total": 100, "title": "Snoop Dogg"},
+    {"upgrade_stars": 25}, {"upgrade_stars": 0},
+    {"availability_resale": 1, "resell_min_stars": 200},
+    {"upgrade_variants": 0}, {"upgrade_variants": 6},
+    {"peer_color_available": True}, {"background": object()},
+])
+async def test_non_upgraded_collectible_cannot_use_ordinary_flow(context, attributes):
+    client, adapter = context
+    client.gifts = [gift(**attributes)]
+    catalogue = await adapter.catalogue(force=True)
+    assert catalogue[0].kind == "collectible" and not catalogue[0].available
+    with pytest.raises(GiftUnavailable, match="gift_unsupported"):
         await adapter.prepare(77, Recipient(123, "recipient", client.recipient), 15)
     assert not any(isinstance(r, functions.payments.SendStarsFormRequest) for r in client.requests)
 

@@ -117,8 +117,8 @@ async def _recheck_one(bot: Bot, *, completion_id: int) -> bool:
         T.log_task_lost.format(
             tg_id=tg_id,
             title=safe_title,
-            amount=f"{amount:.2f}⭐",
-            debt_part=f", в долг {debt:.2f}⭐" if debt > 0 else "",
+            amount=stars(amount),
+            debt_part=T.notify_ref_lost_debt.format(debt=stars(debt)) if debt > 0 else "",
         ),
     )
     return True

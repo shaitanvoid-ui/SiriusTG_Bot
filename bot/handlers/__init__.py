@@ -42,6 +42,7 @@ from bot.handlers.admin import sponsors as admin_sponsors
 from bot.handlers.admin import stop_words as admin_stop_words
 from bot.handlers.admin import support as admin_support
 from bot.handlers.admin import users as admin_users
+from bot.handlers.admin import antifraud as admin_antifraud
 from bot.middlewares.gates import (
     CaptchaGateMiddleware,
     SubGateMiddleware,
@@ -91,6 +92,7 @@ def get_root_router() -> Router:
     root.include_router(admin_reviews.router)
     root.include_router(admin_dashboard.router)
     root.include_router(admin_users.router)
+    root.include_router(admin_antifraud.router)
     root.include_router(admin_economy.router)
     root.include_router(admin_gifts.router)
     root.include_router(admin_broadcast.router)

@@ -137,7 +137,7 @@ async def cb_key(callback: CallbackQuery, state: FSMContext, session: AsyncSessi
     if key not in DEFAULTS:
         await callback.answer()
         return
-    if key.startswith("gifts.") and callback.from_user.id != settings.owner_id:
+    if key.startswith(("gifts.", "antifraud.")) and callback.from_user.id != settings.owner_id:
         await callback.answer(T.admin_gift_owner_only, show_alert=True)
         return
     svc = SettingsService(session)
@@ -170,7 +170,7 @@ async def msg_value(
     if key not in DEFAULTS:
         await state.clear()
         return
-    if key.startswith("gifts.") and (message.from_user is None or message.from_user.id != settings.owner_id):
+    if key.startswith(("gifts.", "antifraud.")) and (message.from_user is None or message.from_user.id != settings.owner_id):
         await state.clear()
         await message.answer(T.admin_gift_owner_only)
         return

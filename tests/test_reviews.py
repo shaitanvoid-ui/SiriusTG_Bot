@@ -160,7 +160,7 @@ async def test_notify_user_approved(session):
     bot = _FakeBot()
     await ReviewService(session).notify_user_approved(bot, review, 1.0)
     assert bot.sent and bot.sent[0][0] == user.tg_id
-    assert "+1.00⭐" in bot.sent[0][1]
+    assert "+1.00 ед." in bot.sent[0][1]
 
 
 # ---------- клавиатуры (регрессия: флоу был недостижим) ----------

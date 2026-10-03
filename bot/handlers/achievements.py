@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router, html
 from aiogram.types import CallbackQuery
@@ -30,14 +31,16 @@ def _render(views) -> str:
         if v.unlocked:
             lines.append(
                 T.ach_row_unlocked.format(
-                    emoji=v.emoji, name=html.quote(v.name), reward=stars(v.reward)
+                    emoji=html.quote(v.emoji),
+                    name=html.quote(v.name),
+                    reward=stars(v.reward),
                 )
             )
         else:
             unit = METRIC_UNIT.get(v.metric, "")
             lines.append(
                 T.ach_row_locked.format(
-                    emoji=v.emoji,
+                    emoji=html.quote(v.emoji),
                     name=html.quote(v.name),
                     bar=mini_bar(v.current, v.threshold),
                     current=v.current,
@@ -71,7 +74,7 @@ async def cb_open(
 
     svc = AchievementsService(session, SettingsService(session))
     if not await svc.enabled():
-        with suppress(Exception):
+        with ignore_unchanged():
             await callback.message.edit_text(T.ach_empty, reply_markup=kb_achievements())
         await callback.answer()
         return
@@ -80,12 +83,12 @@ async def cb_open(
     views = await svc.list_for_user(user)
 
     if not views:
-        with suppress(Exception):
+        with ignore_unchanged():
             await callback.message.edit_text(T.ach_empty, reply_markup=kb_achievements())
         await callback.answer()
         return
 
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(_render(views), reply_markup=kb_achievements())
 
     if awarded:

@@ -11,8 +11,8 @@ def kb_daily(actions: tuple[DailyAction, ...]) -> InlineKeyboardMarkup:
     builder = SiriusKeyboardBuilder()
     for action in actions:
         if not action.complete:
-            builder.button(text=action.label, callback_data=action.callback, style="primary")
+            builder.button(text=action.label, callback_data=action.callback)
     builder.button(text=T.btn_refresh, callback_data="day:open")
-    builder.button(text=T.btn_back_menu, callback_data="nav:menu")
-    builder.adjust(*([1] * sum(not action.complete for action in actions)), 2)
+    builder.footer(text=T.btn_back_menu, callback_data="nav:menu")
+    builder.adjust(*([1] * sum(not action.complete for action in actions)), 1, 1)
     return builder.as_markup()

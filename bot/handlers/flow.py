@@ -188,6 +188,6 @@ async def notify_referrer_reward(bot: Bot, event: RewardEvent) -> None:
                 app_settings.log_channel_id,
                 T.log_ref_confirmed.format(
                     referrer_tg_id=event.referrer_tg_id,
-                    reward=f"{event.amount:.2f}⭐",
+                    reward=stars(event.amount),
                 ),
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -24,7 +25,7 @@ from services.notifications import NotificationService
 from services.referral import ReferralService
 from services.settings import SettingsService
 from services.sponsor import SponsorService
-from services.support import CreateStatus, SupportService, make_subject
+from services.support import CreateStatus, SupportService, make_subject, render_thread
 from tests.helpers import create_sponsor, create_user
 
 
@@ -88,6 +89,18 @@ def test_make_subject_truncates():
     long = "д" * 80
     subject = make_subject(long)
     assert len(subject) == 60 and subject.endswith("…")
+
+
+def test_render_thread_keeps_card_within_telegram_limit():
+    messages = [
+        SimpleNamespace(author="user", text=f"#{index} " + "&" * 500)
+        for index in range(20)
+    ]
+    rendered = render_thread(messages)
+    assert len(rendered) < 3_000
+    assert "#0" not in rendered
+    assert "#19" in rendered
+    assert "Более ранние сообщения" in rendered
 
 
 # ---------- поддержка: статусы переписки ----------
@@ -157,7 +170,7 @@ async def test_autoclose_closes_stale_awaiting(session, session_factory, monkeyp
 
 async def test_notify_prefs_default_and_toggle(session):
     user = await create_user(session, tg_id=999000109)
-    assert NotificationService.prefs_of(user) == {"refs": True, "tasks": True, "rewards": True}
+    assert NotificationService.prefs_of(user) == {"refs": True, "tasks": True, "rewards": True, "daily": False}
     assert NotificationService.is_enabled(user, "refs") is True
 
     user_id = user.id

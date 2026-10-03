@@ -1,10 +1,10 @@
-"""Промокоды: redeem, honeypot-ban, базовая админ-логика.
+"""Промокоды: redeem, auditable honeypot evidence, базовая админ-логика.
 
 Структура `Promo`: code, reward, max_activations (0 = безлимит), used_count,
 expires_at, is_honeypot, is_active.
 
-Honeypot: юзер, активировавший такой промокод, получает soft-ban
-(`User.is_banned = True`), без начисления награды.
+Honeypot не начисляет награду и создаёт объяснимый сигнал антифрода.
+При настроенном пороге ограничиваются награды через is_shadow_banned.
 """
 
 from __future__ import annotations
@@ -113,10 +113,12 @@ class PromoService:
             await promo_repo.release_use(promo.id)
             return RedeemResult(status=PromoStatus.ALREADY_USED, code=promo.code)
 
-        # Honeypot учитывает те же active/expiry/limit правила. Полноценный
-        # антифрод этапа 12 здесь не реализуется — сохраняется текущая механика.
+        # Honeypot учитывает те же active/expiry/limit правила, без награды.
         if promo.is_honeypot:
-            await self._ban_user(user)
+            from services.antifraud import AntifraudService
+            await AntifraudService(self.session, self.settings).honeypot_hit(
+                user=user, kind="promo", source_id=promo.id,
+            )
             await ActionLogRepo(self.session).log(
                 user_tg_id=user.tg_id,
                 action="promo_honeypot",
@@ -145,14 +147,6 @@ class PromoService:
             balance=balance,
             code=promo.code,
         )
-
-    async def _ban_user(self, user: User) -> None:
-        from sqlalchemy import update
-
-        await self.session.execute(
-            update(User).where(User.id == user.id).values(is_banned=True)
-        )
-
 
 def _expired(promo: Promo) -> bool:
     if promo.expires_at is None:

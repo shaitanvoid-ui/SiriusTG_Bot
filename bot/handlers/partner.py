@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 import re
 from contextlib import suppress
 
 from aiogram import Bot, F, Router, html
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +41,36 @@ from utils.ui import stars
 router = Router(name="partner")
 
 _USERNAME_RE = re.compile(r"^@?([A-Za-z][A-Za-z0-9_]{3,31})$")
+
+
+async def _edit_fsm_card(
+    message: Message,
+    state: FSMContext,
+    text: str,
+    reply_markup,
+) -> None:
+    """Оставлять один актуальный экран в текстовых сценариях партнёра."""
+    data = await state.get_data()
+    edited = False
+    chat_id = data.get("ui_chat_id")
+    message_id = data.get("ui_message_id")
+    if chat_id and message_id:
+        try:
+            await message.bot.edit_message_text(
+                text,
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            edited = True
+        except TelegramBadRequest:
+            pass
+    if not edited:
+        sent = await message.answer(text, reply_markup=reply_markup)
+        await state.update_data(ui_chat_id=sent.chat.id, ui_message_id=sent.message_id)
+    with suppress(TelegramBadRequest):
+        await message.delete()
 
 
 def _svc(session: AsyncSession) -> PartnerService:
@@ -80,7 +112,7 @@ async def _render_root(
         rate=f"{rate:g}",
         min_payout=stars(min_payout),
     )
-    with suppress(Exception):
+    with ignore_unchanged():
         await message.edit_text(text, reply_markup=kb_partner_root())
 
 
@@ -95,10 +127,11 @@ async def cb_open(
     if partner is None or callback.message is None:
         return
     await state.clear()
+    await _render_root(callback.message, session, partner)
     if partner.status != PartnerStatus.ACTIVE.value:
         await callback.answer(T.partner_paused_alert, show_alert=True)
-    await _render_root(callback.message, session, partner)
-    await callback.answer()
+    else:
+        await callback.answer()
 
 
 # ---------- UTM-ссылки ----------
@@ -115,7 +148,7 @@ async def _render_links(message, session: AsyncSession, partner: Partner) -> Non
         )
     else:
         rows = T.partner_links_empty
-    with suppress(Exception):
+    with ignore_unchanged():
         await message.edit_text(
             T.partner_links_caption.format(rows=rows, max_links=max_links),
             reply_markup=kb_partner_links(links),
@@ -154,7 +187,11 @@ async def cb_link_add(
         )
         return
     await state.set_state(PartnerLinkStates.waiting_title)
-    with suppress(Exception):
+    await state.update_data(
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.partner_link_title_prompt, reply_markup=kb_partner_cancel()
         )
@@ -175,33 +212,49 @@ async def msg_link_title(
         await state.clear()
         return
     title = (message.text or "").strip()
-    if not title:
-        await message.answer(T.partner_link_title_prompt, reply_markup=kb_partner_cancel())
+    if not title or len(title) > 64:
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_link_title_prompt + "\n\n" + T.partner_link_title_invalid,
+            kb_partner_cancel(),
+        )
         return
     link = await _svc(session).create_link(partner, title)
-    await state.clear()
     if link is None:
         max_links = await SettingsService(session).get_int("partner.max_links", 10)
-        await message.answer(T.partner_link_limit_alert.format(max_links=max_links))
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_link_limit_alert.format(max_links=max_links),
+            kb_partner_back(),
+        )
+        await state.clear()
         return
-    sent = await message.answer("…")
-    await _render_link_card(sent, message.bot, link)
+    text, markup = await _link_card_view(message.bot, link)
+    await _edit_fsm_card(message, state, text, markup)
+    await state.clear()
+
+
+async def _link_card_view(bot: Bot | None, link):
+    username = await get_bot_username(bot) if bot else ""
+    url = f"https://t.me/{username}?start=p{link.code}" if username else f"start=p{link.code}"
+    return (
+        T.partner_link_card.format(
+            title=html.quote(link.title),
+            url=html.quote(url),
+            clicks=link.clicks,
+            joins=link.joins,
+            passed=link.passed,
+        ),
+        kb_partner_link_card(link.id),
+    )
 
 
 async def _render_link_card(message, bot: Bot | None, link) -> None:
-    username = await get_bot_username(bot) if bot else ""
-    url = f"https://t.me/{username}?start=p{link.code}" if username else f"start=p{link.code}"
-    with suppress(Exception):
-        await message.edit_text(
-            T.partner_link_card.format(
-                title=html.quote(link.title),
-                url=url,
-                clicks=link.clicks,
-                joins=link.joins,
-                passed=link.passed,
-            ),
-            reply_markup=kb_partner_link_card(link.id),
-        )
+    text, markup = await _link_card_view(bot, link)
+    with ignore_unchanged():
+        await message.edit_text(text, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("pa:lnk:del:"))
@@ -270,7 +323,7 @@ async def _render_sponsors(message, session: AsyncSession, partner: Partner) -> 
         )
     else:
         rows = T.partner_sponsors_empty
-    with suppress(Exception):
+    with ignore_unchanged():
         await message.edit_text(
             T.partner_sponsors_caption.format(rows=rows),
             reply_markup=kb_partner_sponsors(),
@@ -303,7 +356,11 @@ async def cb_sponsor_add(
     if partner is None or callback.message is None:
         return
     await state.set_state(PartnerSponsorStates.waiting_channel)
-    with suppress(Exception):
+    await state.update_data(
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.partner_sponsor_prompt, reply_markup=kb_partner_cancel()
         )
@@ -327,7 +384,12 @@ async def msg_sponsor_channel(
 
     m = _USERNAME_RE.match((message.text or "").strip())
     if m is None:
-        await message.answer(T.partner_sponsor_invalid, reply_markup=kb_partner_cancel())
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_sponsor_prompt + "\n\n" + T.partner_sponsor_invalid,
+            kb_partner_cancel(),
+        )
         return
     username = m.group(1)
 
@@ -335,10 +397,20 @@ async def msg_sponsor_channel(
         chat = await bot.get_chat(f"@{username}")
         member = await bot.get_chat_member(chat.id, bot.id)
         if member.status not in ("administrator", "creator"):
-            await message.answer(T.partner_sponsor_invalid, reply_markup=kb_partner_cancel())
+            await _edit_fsm_card(
+                message,
+                state,
+                T.partner_sponsor_prompt + "\n\n" + T.partner_sponsor_invalid,
+                kb_partner_cancel(),
+            )
             return
     except TelegramAPIError:
-        await message.answer(T.partner_sponsor_invalid, reply_markup=kb_partner_cancel())
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_sponsor_prompt + "\n\n" + T.partner_sponsor_invalid,
+            kb_partner_cancel(),
+        )
         return
 
     repo = SponsorRepo(session)
@@ -346,7 +418,12 @@ async def msg_sponsor_channel(
         await repo.get_by_chat_id(chat.id) if chat.id else None
     )
     if existing is not None:
-        await message.answer(T.partner_sponsor_exists, reply_markup=kb_partner_cancel())
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_sponsor_prompt + "\n\n" + T.partner_sponsor_exists,
+            kb_partner_cancel(),
+        )
         return
 
     title = chat.title or username
@@ -359,11 +436,13 @@ async def msg_sponsor_channel(
         is_active=False,  # активирует owner после проверки и установки награды
     )
     sponsor.partner_id = partner.id
-    await state.clear()
-    await message.answer(
+    await _edit_fsm_card(
+        message,
+        state,
         T.partner_sponsor_created.format(title=html.quote(title)),
-        reply_markup=kb_partner_back(),
+        kb_partner_back(),
     )
+    await state.clear()
 
 
 # ---------- выплаты ----------
@@ -394,7 +473,7 @@ async def cb_payout(
         )
         return
     rate = await svc.settings.get_float("partner.rub_per_star", 1.5)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.partner_payout_intro.format(
                 balance=stars(partner.balance),
@@ -421,13 +500,17 @@ async def cb_payout_method(
         await callback.answer()
         return
     await state.set_state(PartnerPayoutStates.waiting_requisites)
-    await state.update_data(payout_method=method)
+    await state.update_data(
+        payout_method=method,
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
     what = (
         T.partner_payout_what_card
         if method == PayoutMethod.CARD.value
         else T.partner_payout_what_yoomoney
     )
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.partner_payout_requisites_prompt.format(
                 what=what, amount=stars(partner.balance)
@@ -455,32 +538,65 @@ async def msg_payout_requisites(
     data = await state.get_data()
     method = PayoutMethod(data.get("payout_method", PayoutMethod.CARD.value))
     requisites = (message.text or "").strip()
-    if not requisites:
-        return
-
-    result = await svc.request_payout(partner, method=method, requisites=requisites)
-    await state.clear()
-
-    if result.status == PayoutRequestStatus.ALREADY_PENDING:
-        await message.answer(T.partner_payout_pending_alert, reply_markup=kb_partner_back())
-        return
-    if result.status == PayoutRequestStatus.NOT_ACTIVE:
-        await message.answer(T.partner_payout_not_active_alert, reply_markup=kb_partner_back())
-        return
-    if result.status == PayoutRequestStatus.TOO_SMALL or result.payout is None:
-        await message.answer(
-            T.partner_payout_too_small_alert.format(min_amount=stars(result.min_amount)),
-            reply_markup=kb_partner_back(),
+    if len(requisites) < 4 or len(requisites) > 255:
+        what = (
+            T.partner_payout_what_card
+            if method == PayoutMethod.CARD
+            else T.partner_payout_what_yoomoney
+        )
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_payout_requisites_prompt.format(
+                what=what,
+                amount=stars(partner.balance),
+            )
+            + "\n\n"
+            + T.partner_payout_requisites_invalid,
+            kb_partner_cancel(),
         )
         return
 
+    result = await svc.request_payout(partner, method=method, requisites=requisites)
+
+    if result.status == PayoutRequestStatus.ALREADY_PENDING:
+        await _edit_fsm_card(
+            message, state, T.partner_payout_pending_alert, kb_partner_back()
+        )
+        await state.clear()
+        return
+    if result.status == PayoutRequestStatus.NOT_ACTIVE:
+        await _edit_fsm_card(
+            message, state, T.partner_payout_not_active_alert, kb_partner_back()
+        )
+        await state.clear()
+        return
+    if result.status == PayoutRequestStatus.SECURE_STORAGE_UNAVAILABLE:
+        await _edit_fsm_card(
+            message, state, T.partner_payout_secure_error, kb_partner_back()
+        )
+        await state.clear()
+        return
+    if result.status == PayoutRequestStatus.TOO_SMALL or result.payout is None:
+        await _edit_fsm_card(
+            message,
+            state,
+            T.partner_payout_too_small_alert.format(min_amount=stars(result.min_amount)),
+            kb_partner_back(),
+        )
+        await state.clear()
+        return
+
     payout = result.payout
-    await message.answer(
+    await _edit_fsm_card(
+        message,
+        state,
         T.partner_payout_created.format(
             amount=stars(payout.amount_stars), rub=f"{payout.amount_rub:.2f}"
         ),
-        reply_markup=kb_partner_back(),
+        kb_partner_back(),
     )
+    await state.clear()
 
     # лог-канал — после успешной заявки
     from core.config import settings as app_settings
@@ -526,8 +642,20 @@ async def cb_history(
         )
     else:
         rows = T.partner_history_empty
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.partner_history_caption.format(rows=rows), reply_markup=kb_partner_back()
         )
     await callback.answer()
+
+
+@router.message(PartnerLinkStates.waiting_title)
+@router.message(PartnerSponsorStates.waiting_channel)
+@router.message(PartnerPayoutStates.waiting_requisites)
+async def msg_partner_non_text(message: Message) -> None:
+    await message.answer(T.text_input_required)
+
+
+@router.callback_query(F.data.startswith("pa:"))
+async def cb_partner_stale(callback: CallbackQuery) -> None:
+    await callback.answer(T.stale_screen_alert, show_alert=True)

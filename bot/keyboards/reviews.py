@@ -1,7 +1,7 @@
 """Клавиатуры для отзывов."""
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import DisabledButton, InlineKeyboardMarkup
 from utils.keyboards import SiriusKeyboardBuilder as InlineKeyboardBuilder
 
 from locales.ru import T
@@ -10,8 +10,8 @@ from locales.ru import T
 def kb_review_intro() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=T.btn_review_start, callback_data="rev:start")
-    b.button(text=T.btn_back_help, callback_data="sec:help")
-    b.adjust(1, 1)
+    b.footer(text=T.btn_back_help, callback_data="sec:help")
+    b.adjust(1, 2)
     return b.as_markup()
 
 
@@ -20,7 +20,10 @@ def kb_review_rating(current: int = 0) -> InlineKeyboardMarkup:
     for i in range(1, 6):
         marker = "●" if i == current else "○"
         b.button(text=f"{marker} {i} ⭐", callback_data=f"rev:star:{i}")
-    b.button(text=T.btn_review_next, callback_data="rev:rating_next")
+    if 1 <= current <= 5:
+        b.button(text=T.btn_review_next, callback_data="rev:rating_next")
+    else:
+        b.button(text=T.btn_review_next, disabled=DisabledButton())
     b.button(text=T.btn_review_cancel, callback_data="rev:cancel")
     b.adjust(3, 2, 1, 1)
     return b.as_markup()
@@ -42,7 +45,7 @@ def kb_review_anonymity() -> InlineKeyboardMarkup:
     b.button(text=T.btn_review_anonymous, callback_data="rev:anon_yes")
     b.button(text=T.btn_review_back, callback_data="rev:back:text")
     b.button(text=T.btn_review_cancel, callback_data="rev:cancel")
-    b.adjust(1, 1, 2)
+    b.adjust(2, 2)
     return b.as_markup()
 
 
@@ -57,6 +60,6 @@ def kb_review_confirm() -> InlineKeyboardMarkup:
 
 def kb_review_success() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text=T.btn_back_help, callback_data="sec:help")
+    b.footer(text=T.btn_back_help, callback_data="sec:help")
     b.adjust(1)
     return b.as_markup()

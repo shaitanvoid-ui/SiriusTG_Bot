@@ -144,6 +144,9 @@ async def cb_unban(callback: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data.startswith("adm:usr:shon:"))
 async def cb_shadow_on(callback: CallbackQuery, session: AsyncSession) -> None:
+    if callback.from_user.id != settings.owner_id:
+        await callback.answer(T.antifraud_owner_only, show_alert=True)
+        return
     target_id, user = await _resolve(callback, session)
     if user is None or callback.message is None:
         await callback.answer(T.admin_user_not_found, show_alert=True)
@@ -161,18 +164,16 @@ async def cb_shadow_on(callback: CallbackQuery, session: AsyncSession) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:usr:shoff:"))
-async def cb_shadow_off(callback: CallbackQuery, session: AsyncSession) -> None:
+async def cb_shadow_off(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    if callback.from_user.id != settings.owner_id:
+        await callback.answer(T.antifraud_owner_only, show_alert=True)
+        return
     target_id, user = await _resolve(callback, session)
     if user is None or callback.message is None:
         await callback.answer(T.admin_user_not_found, show_alert=True)
         return
-    await UserRepo(session).set_shadow_banned(target_id, False)
-    await ActionLogRepo(session).log(
-        user_tg_id=user.tg_id, action="admin_shadow_off", payload=None
-    )
-    await session.refresh(user)
-    await _render_card(callback.message, session, user)
-    await callback.answer(T.admin_user_shadow_off_alert, show_alert=False)
+    from bot.handlers.admin.antifraud import begin_reset
+    await begin_reset(callback, state, target_id)
 
 
 # ---------- баланс ± ----------
@@ -226,7 +227,7 @@ async def msg_balance_delta(message: Message, state: FSMContext, session: AsyncS
     await state.clear()
     await message.answer(
         T.admin_user_balance_done.format(
-            delta=f"{delta:+.2f}⭐", balance=stars(user.balance)
+            delta=("+" if delta >= 0 else "−") + stars(abs(delta)), balance=stars(user.balance)
         )
     )
     await _send_card(message, session, user)

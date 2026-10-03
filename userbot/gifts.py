@@ -178,9 +178,15 @@ def _classified_failure(exc: Exception, *, paying: bool) -> GiftAdapterError:
 
 def _ordinary_gift(raw: types.StarGift) -> Gift:
     reason: str | None = None
+    collectible = (bool(raw.limited) or raw.upgrade_stars is not None
+                   or raw.availability_resale is not None or raw.resell_min_stars is not None
+                   or raw.upgrade_variants is not None or bool(raw.peer_color_available)
+                   or raw.background is not None)
     if raw.auction:
         reason = "gift_auction_unsupported"
-    elif raw.sold_out or (raw.limited and (raw.availability_remains or 0) <= 0):
+    elif collectible:
+        reason = "gift_collectible_unsupported"
+    elif raw.sold_out:
         reason = "gift_sold_out"
     elif raw.limited_per_user and (raw.per_user_remains or 0) <= 0:
         reason = "gift_user_limit"
@@ -189,7 +195,7 @@ def _ordinary_gift(raw: types.StarGift) -> Gift:
     return Gift(
         gift_id=raw.id, title=raw.title or f"Подарок #{raw.id}", stars=raw.stars,
         available=reason is None, reason=reason,
-        kind="auction" if raw.auction else "ordinary",
+        kind="auction" if raw.auction else "collectible" if collectible else "ordinary",
         limited=bool(raw.limited), availability_remains=raw.availability_remains,
         requires_premium=bool(raw.require_premium), per_user_remains=raw.per_user_remains,
         convert_stars=raw.convert_stars, locked_until=raw.locked_until_date,

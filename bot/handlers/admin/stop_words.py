@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 
 from aiogram import F, Router, html
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +34,7 @@ async def cb_open(callback: CallbackQuery, state: FSMContext, session: AsyncSess
         await callback.answer()
         return
     words = await StopWordRepo(session).get_words()
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(_render_root(words), reply_markup=kb_stop_words())
     await callback.answer()
 
@@ -44,7 +45,7 @@ async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.set_state(StopWordStates.waiting_add)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(T.admin_sw_add_prompt, reply_markup=kb_sw_cancel())
     await callback.answer()
 
@@ -55,7 +56,7 @@ async def cb_remove(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.set_state(StopWordStates.waiting_remove)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(T.admin_sw_remove_prompt, reply_markup=kb_sw_cancel())
     await callback.answer()
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +31,7 @@ async def cb_open(callback: CallbackQuery, db_user: User) -> None:
         await callback.answer()
         return
     prefs = NotificationService.prefs_of(db_user)
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(
             _render_card(prefs), reply_markup=kb_notifications(prefs)
         )
@@ -48,7 +48,7 @@ async def cb_toggle(
     category = (callback.data or "").rsplit(":", 1)[-1]
     prefs = NotificationService.toggle(db_user, category)
     await session.flush()
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(
             _render_card(prefs), reply_markup=kb_notifications(prefs)
         )

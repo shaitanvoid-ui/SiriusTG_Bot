@@ -344,7 +344,7 @@ async def test_admin_partner_card_renders(session):
 
     msg = _FakeMsg()
     await _render_card(msg, session, partner)
-    assert msg.text is not None and "ПАРТНЁР #" in msg.text
+    assert msg.text is not None and "Партнёр #" in msg.text
 
     msg2 = _FakeMsg()
     await _render_root(msg2, session)

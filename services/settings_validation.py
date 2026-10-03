@@ -176,6 +176,23 @@ def _validate_faq(value: Any) -> None:
 
 
 def validate_setting_value(key: str, value: Any) -> None:
+    if key.startswith("antifraud."):
+        if key in {"antifraud.enabled", "antifraud.auto_shadow"}:
+            if not isinstance(value, bool):
+                raise ValueError("Переключатель антифрода должен быть bool")
+        else:
+            bounds = {
+                "antifraud.actions_per_minute": (1, 100), "antifraud.window_seconds": (10, 300),
+                "antifraud.shadow_threshold": (1, 99), "antifraud.review_threshold": (0, 100),
+                "antifraud.evidence_hours": (1, 720), "antifraud.young_first_seen_hours": (1, 720),
+                "antifraud.ref_window_minutes": (1, 1440), "antifraud.ref_velocity_count": (2, 10000),
+                "antifraud.pattern_window_seconds": (60, 86400), "antifraud.pattern_samples": (4, 100),
+                "antifraud.pattern_min_clicks": (4, 100), "antifraud.pattern_variation_permille": (0, 1000),
+            }
+            low, high = (0, 100) if key.startswith("antifraud.weight_") else bounds.get(key, (1, 100))
+            number = _number(value, key)
+            if number != int(number) or not low <= number <= high:
+                raise ValueError(f"{key}: нужно целое число от {low} до {high}")
     if key == "gifts.lease_seconds" and _number(value, key) < 120:
         raise ValueError("Lease очереди подарков должен быть не меньше 120 секунд")
     """Проверяет автономные ограничения одного значения."""
@@ -245,6 +262,7 @@ async def validate_setting_change(
             return await settings.get(other_key)
 
         pairs = (
+            ("antifraud.pattern_min_clicks", "antifraud.pattern_samples", "Минимум кликов не может превышать размер выборки"),
             ("click.captcha_every_min", "click.captcha_every_max", "Минимум мини-капчи не может быть больше максимума"),
             ("support.min_text_length", "support.max_text_length", "Минимальная длина обращения не может быть больше максимальной"),
             ("review.min_text_length", "review.max_text_length", "Минимальная длина отзыва не может быть больше максимальной"),

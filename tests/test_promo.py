@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
+from db.base import utcnow
+from db.repositories.promo import PromoRepo
 from db.repositories.user import UserRepo
 from services.promo import PromoService, PromoStatus
 from services.settings import SettingsService
@@ -29,7 +33,7 @@ async def test_not_found(session):
     assert r.status == PromoStatus.NOT_FOUND
 
 
-async def test_honeypot_bans_user(session):
+async def test_honeypot_shadows_user_without_hard_ban(session):
     user = await create_user(session, tg_id=999000012)
     await create_promo(session, code="TRAP", reward=5.0, is_honeypot=True)
     svc = PromoService(session, SettingsService(session))
@@ -38,7 +42,8 @@ async def test_honeypot_bans_user(session):
     assert r.status == PromoStatus.HONEYPOT_BANNED
 
     fresh = await UserRepo(session).get_by_id(user.id)
-    assert fresh.is_banned is True
+    assert fresh.is_shadow_banned is True
+    assert fresh.is_banned is False
     assert fresh.balance == 0.0
 
 
@@ -83,3 +88,14 @@ async def test_already_used_while_promo_stays_active(session):
 
     assert (await svc.redeem(user=user, raw_code="MULTI")).status == PromoStatus.OK
     assert (await svc.redeem(user=user, raw_code="MULTI")).status == PromoStatus.ALREADY_USED
+
+
+async def test_atomic_reservation_rejects_expired_active_promo(session):
+    promo = await create_promo(session, code="JUSTEXPIRED", reward=1.0)
+    promo.expires_at = utcnow() - timedelta(seconds=1)
+    await session.flush()
+
+    assert not await PromoRepo(session).try_reserve_use(promo.id)
+    await session.refresh(promo)
+    assert promo.used_count == 0
+    assert promo.is_active is True

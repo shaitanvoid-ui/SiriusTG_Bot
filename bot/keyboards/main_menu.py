@@ -11,24 +11,19 @@ def kb_main_menu(*, channel_url: str | None = None, next_label: str | None = Non
     """Главное меню только с доступными пользовательскими разделами."""
     b = InlineKeyboardBuilder()
 
-    if next_label and next_callback:
-        b.button(text=next_label, callback_data=next_callback, style="success")
+    # Одна главная цель, затем компактная навигация по разделам.
+    b.button(text=T.btn_menu_gifts, callback_data="gift:open", style="primary")
     b.button(text=T.btn_menu_daily, callback_data="day:open")
     b.button(text=T.btn_menu_earn, callback_data="sec:earn")
-
-    # Подарки получают с текущего аккаунта Telegram после явного подтверждения.
-    b.button(text=T.btn_menu_gifts, callback_data="gift:open")
-
-    # Рефералы и личный кабинет.
-    b.button(text=T.btn_menu_referrals, callback_data="ref:open")
     b.button(text=T.btn_menu_profile, callback_data="prof:open")
-
-    # Ряд 3: помощь + официальный канал
+    b.button(text=T.btn_menu_referrals, callback_data="ref:open")
+    if next_label and next_callback and next_callback not in {"gift:open", "day:open", "sec:earn", "prof:open", "ref:open", "sec:help"}:
+        b.button(text=next_label, callback_data=next_callback)
+        next_row = [1]
+    else:
+        next_row = []
     b.button(text=T.btn_menu_help, callback_data="sec:help")
-
-    # Ряд 4: канал (URL если настроен)
     if channel_url:
         b.button(text=T.btn_menu_channel, url=channel_url)
-
-    b.adjust(*([1] if next_label and next_callback else []), 2, 1, 2, 2)
+    b.adjust(1, 2, 2, *next_row, 2 if channel_url else 1)
     return b.as_markup()

@@ -117,7 +117,7 @@ def _stats(**kw) -> DashboardStats:
 def test_render_digest_contains_metrics():
     text = digest_mod.render_digest(_stats())
     assert "10" in text and "55.50" in text and "140" in text
-    assert "Дайджест" in text
+    assert "Обзор за сутки" in text
 
 
 async def test_run_daily_digest_sends_message(session, session_factory, monkeypatch):

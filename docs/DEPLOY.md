@@ -2,7 +2,8 @@
 
 Ран-бук деплоя и эксплуатации. Стек: Python 3.14.7 (Docker), aiogram 3.31,
 SQLAlchemy 2.1 (async, SQLite), Alembic, APScheduler 3.11.
-Обновление 01.10.2026, проверки и откат: [MODERNIZATION.md](MODERNIZATION.md).
+Актуальные изменения: [этап 7](STAGE7.md), [антифрод](STAGE12.md),
+[учёт средств](EXACT_MONEY.md). Первичная модернизация: [MODERNIZATION.md](MODERNIZATION.md).
 
 ## Требования
 
@@ -13,10 +14,11 @@ SQLAlchemy 2.1 (async, SQLite), Alembic, APScheduler 3.11.
 ## Первый запуск
 
 ```bash
-cp .env.example .env        # заполнить BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID
+test -f .env || cp .env.example .env
 docker compose build
-docker compose run --rm bot python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# скопировать вывод в FERNET_KEY в .env, затем:
+docker compose run --rm -T --no-deps --volume "$PWD/.env:/setup.env" \
+  --volume "$PWD/scripts/init_env.py:/setup.py:ro" --entrypoint python bot /setup.py /setup.env
+# заполнить BOT_TOKEN, OWNER_ID, LOG_CHANNEL_ID в .env; существующий Fernet-ключ сохраняется
 docker compose up -d         # entrypoint применит alembic upgrade head до polling
 curl http://localhost:8080/health     # liveness: {"status":"ok"}
 curl http://localhost:8080/ready      # БД + Alembic head: {"status":"ready"}
@@ -62,26 +64,38 @@ docker compose -f docker-compose.test.yml run --rm test
 - БД: `./data/bot.db` (volume-mount). Все экономические параметры — в таблице `settings`, правятся из админки (`/admin → Экономика`) без передеплоя.
 - **Авто-бэкап**: воркер `db_backup` каждые `backup.interval_hours` (6ч) шлёт в `LOG_CHANNEL_ID` только Fernet-зашифрованный файл `*.db.fernet`; открытый временный файл удаляется после отправки.
 - `FERNET_KEY` нужно хранить в отдельном защищённом хранилище: без исходного ключа расшифровать бэкап нельзя. Лог-канал всё равно должен быть приватным.
-- Ручной аварийный бэкап: остановить контейнер, скопировать `data/bot.db` в
-  защищённое хранилище и снова запустить контейнер. Для регулярных копий
-  использовать встроенный Fernet-воркер — он снимает консистентный snapshot
-  через SQLite backup API без остановки.
+- Ручной бэкап перед миграцией: остановить бот, выполнить команду ниже с новым
+  каталогом. Помощник использует SQLite backup API с учётом WAL, проверяет целостность
+  и расшифровку. Простое копирование `.db` не является консистентным бэкапом.
+
+```bash
+docker compose stop bot
+docker compose run --rm -T --no-deps -e PYTHONPATH=/app \
+  --volume "$PWD/scripts/backup_local.py:/maintenance.py:ro" --entrypoint python bot \
+  /maintenance.py /app/data/backups/before-update-YYYYMMDD
+```
+
+В PowerShell вместо `$PWD` в параметре volume используйте `${PWD}`. При обновлении
+0015 → 0016 сначала проверьте зашифрованный снимок на отдельной копии через
+`scripts/stage12_migration_probe.py`; он никогда не открывает рабочую БД.
 
 Восстановление (в `.env` должен быть тот же `FERNET_KEY`, которым создан бэкап):
 
 ```bash
 cp /path/to/downloaded.db.fernet data/restore.db.fernet
 docker compose stop bot
-docker compose run --rm bot python -m utils.backup_crypto \
+docker compose run --rm --no-deps --entrypoint python bot -m utils.backup_crypto \
   /app/data/restore.db.fernet /app/data/restored.db
-cp data/bot.db data/bot.db.before-restore
 mv data/restored.db data/bot.db
 docker compose up -d
 curl http://localhost:8080/ready
 ```
 
-После проверки удалить локальные `restore.db.fernet` и `bot.db.before-restore`
-или перенести их в защищённое хранилище.
+До замены БД требуется сверить неизвестные и уже отправленные подарки с журналом.
+Старый снимок может не содержать выполненные выдачи. Сохраните новое состояние
+консистентным зашифрованным бэкапом. Убедитесь, что все SQLite-клиенты остановлены;
+файлы WAL/SHM от предыдущей БД нельзя переносить к восстановленной БД.
+Резервную копию и ключ храните раздельно в защищённом хранилище.
 
 ## Мониторинг
 
@@ -101,15 +115,25 @@ curl http://localhost:8080/ready
 | db_backup | 6 ч | `backup.*` |
 | daily_digest | 09:00 МСК | `digest.*` |
 
-## Userbot для bio-проверки (опционально)
+## Userbot для bio и выдачи подарков
 
-Сейчас нужен только для проверки bio ежедневного бонуса. Этап 7 с выводом подарков
-ещё не реализован и этой инструкцией не активируется. Для bio-проверки заполнить
+Этап 7 отправляет обычные Stars-подарки через личный аккаунт Telethon.
+Каталог, резерв, очередь, неизвестные оплаты и владельческие решения описаны
+в [STAGE7.md](STAGE7.md). Для подключения заполнить
 `TG_API_ID`/`TG_API_HASH` (my.telegram.org) и `USERBOT_PHONE` в `.env`, затем выполнить
 одноразовый интерактивный логин:
 
 ```bash
+docker compose stop bot
 docker compose run --rm bot python -m userbot.login
+docker compose up -d bot
 ```
 
 Сессия шифруется Fernet и хранится в БД. Пока юзербот не подключён, бонус с `bonus.bio_required=true` отдаёт «проверка временно недоступна» (можно выключить ключом в Экономике).
+
+После входа проверить выбранный номер через getMe и закрепить `USERBOT_ACCOUNT_ID`.
+`OWNER_ID` определяет права владельца в боте и может относиться к другому аккаунту.
+Код и 2FA вводятся скрыто в терминале. Клиенты одной сессии не запускаются параллельно.
+Оплата подарков выключена до настройки владельцем `gifts.enabled` и
+`gifts.daily_budget_stars`; настоящий Stars-баланс пополняет владелец.
+Платный тест требует отдельной команды с получателем и пределом расходов.

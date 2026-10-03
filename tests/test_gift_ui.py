@@ -73,7 +73,7 @@ async def test_confirm_uses_callback_actor_and_durable_token_only():
     session.commit.assert_awaited_once()
     svc.confirm.assert_awaited_once_with(42, "nonce")
     assert await fsm.get_data() == {}
-    assert "Позиция в очереди: <b>4</b>" in cb.message.edit_text.call_args.args[0]
+    assert "Место в очереди: <b>4</b>" in cb.message.edit_text.call_args.args[0]
 
 
 @pytest.mark.parametrize("saved_token, expires", [("other", int(time.time())+60), ("nonce", 0)])
@@ -131,7 +131,7 @@ async def test_recipient_without_username_has_actionable_sender_contact_path():
     svc.account.return_value = SenderStatus(True, tg_id=99, username="gift_sender", stars=50)
     await gifts.cb_quote(cb, session, fsm, svc)
     text = cb.message.edit_text.call_args.args[0]
-    assert "@gift_sender" in text and "необязательно" in text
+    assert "@gift_sender" in text and "username необязателен" in text
     assert "sup:open" in callbacks(cb.message.edit_text.call_args.kwargs["reply_markup"])
 
 
@@ -159,7 +159,7 @@ def test_unknown_payment_cannot_be_cancelled_or_retried_in_ui():
     assert any(":manual_success" in item for item in admin_callbacks)
     assert any(":proven_failure" in item for item in admin_callbacks)
     text = gifts.render_request(unknown)
-    assert "сохранены в резерве" in text and "Повторная покупка не запускается" in text
+    assert "резерв сохранён" in text and "Повторная покупка и возврат до сверки не запускаются" in text
 
 
 def test_unsupported_gift_uses_native_disabled_action_and_exact_money_display():
@@ -167,8 +167,8 @@ def test_unsupported_gift_uses_native_disabled_action_and_exact_money_display():
     keyboard = kb_gift(gift.id, available=False)
     assert keyboard.inline_keyboard[0][0].disabled is not None
     assert keyboard.inline_keyboard[0][0].callback_data is None
-    assert gifts.internal_cost(150001) == "15.0001 ед."
-    assert gifts.internal_cost(-1) == "-0.0001 ед."
+    assert gifts.internal_cost(150001) == "15,0001 ед."
+    assert gifts.internal_cost(-1) == "-0,0001 ед."
     text = gifts.render_gift(gift)
     assert "&lt;gift&gt;" in text and T.gift_unsupported in text
     assert is_card(text) and "<h2>" in render_rich_html(text)

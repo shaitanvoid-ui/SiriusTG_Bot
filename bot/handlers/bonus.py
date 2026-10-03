@@ -57,6 +57,7 @@ def _render(view: BonusView, *, link: str, tiers: dict[int, float]) -> str:
         bio_block = T.bonus_bio_off
 
     return T.bonus_caption.format(
+        claim_note=T.bonus_claim_done if view.claimed_today else T.bonus_claim_ready,
         streak=view.streak,
         today_amount=stars(view.today_amount),
         ladder=_ladder(tiers, view.streak),

@@ -36,6 +36,8 @@
 !workers/**
 !tests/
 !tests/**
+!scripts/
+!scripts/ui_preview.py
 
 **/__pycache__/
 **/*.pyc

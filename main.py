@@ -19,6 +19,7 @@ from bot.middlewares.db import DbSessionMiddleware
 from bot.middlewares.user import UserUpsertMiddleware
 from bot.middlewares.presentation import PresentationMiddleware
 from bot.middlewares.callback_access import CallbackAccessMiddleware
+from bot.middlewares.antifraud import AntifraudMiddleware
 from core.config import settings
 from core.health import set_runtime_ready, start_health_server, stop_health_server
 from core.logger import get_logger, setup_logging
@@ -128,6 +129,8 @@ def _build_shutdown(health_runner: web.AppRunner, scheduler: AsyncIOScheduler, g
 
 def _setup_middlewares(dp: Dispatcher) -> None:
     dp.callback_query.outer_middleware(CallbackAccessMiddleware())
+    dp.message.outer_middleware(AntifraudMiddleware())
+    dp.callback_query.outer_middleware(AntifraudMiddleware())
     db_mw = DbSessionMiddleware()
     user_mw = UserUpsertMiddleware()
     ban_mw = BanCheckMiddleware()

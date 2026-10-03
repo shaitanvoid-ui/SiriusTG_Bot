@@ -89,7 +89,9 @@ class HistoryService:
 
     async def page_for(self, user: User, page: int) -> HistoryPage:
         """Страница ленты (page с 1). Пустая лента — entries=[] и 1 страница."""
-        page_size = await self.settings.get_int("history.page_size", 8)
+        # Защита и от старых/ручных значений в БД, созданных до появления
+        # доменной валидации админки.
+        page_size = min(50, max(1, await self.settings.get_int("history.page_size", 8)))
 
         total = await self.log_repo.count_for_user(user.tg_id, HISTORY_ACTIONS)
         total_pages = max(1, -(-total // page_size))

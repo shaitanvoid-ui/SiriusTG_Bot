@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -35,17 +36,22 @@ async def cb_check_subs(
         return
 
     service = SponsorService(SponsorRepo(session), UserSubscriptionRepo(session))
-    all_ok, _ = await service.check_user(
+    all_ok, results = await service.check_user(
         callback.bot, tg_id=callback.from_user.id, user_id=db_user.id, force=True
     )
     if not all_ok:
-        await callback.answer(T.subs_not_subscribed, show_alert=True)
+        text = (
+            T.subs_not_subscribed
+            if any(result.is_definitively_not_subscribed for result in results)
+            else T.subs_check_unavailable
+        )
+        await callback.answer(text, show_alert=True)
         return
 
     reward_event = await finalize_subs_passed(session=session, user=db_user)
 
     await callback.answer(T.subs_all_ok)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_reply_markup(reply_markup=None)
     await state.clear()
     await show_main_menu(callback.message, session, user=db_user)

@@ -19,7 +19,7 @@ def kb_wheel(*, free_available: bool, can_pay: bool, cost: float) -> InlineKeybo
     else:
         b.button(text=T.btn_wheel_locked, callback_data="whl:noop")
     b.button(text=T.btn_wheel_refresh, callback_data="whl:open")
-    b.button(text=T.btn_back_earn, callback_data="sec:earn")
+    b.footer(text=T.btn_back_earn, callback_data="sec:earn")
     if free_available:
         b.adjust(1, 1, 2)
     else:

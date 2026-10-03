@@ -12,12 +12,14 @@ from __future__ import annotations
 import json
 
 from db.models import User
+from locales.ru import T
 
 # код категории → (эмодзи, название, описание для экрана настроек)
 CATEGORIES: dict[str, tuple[str, str, str]] = {
     "refs": ("👥", "Рефералы", "Награды за друзей и отвалы"),
     "tasks": ("🎯", "Задания", "Списания при отписке от каналов"),
     "rewards": ("🏆", "Награды", "Топ недели, отзывы, выплаты"),
+    "daily": ("☀", T.daily_notification_name, T.daily_notification_hint),
 }
 
 
@@ -26,7 +28,7 @@ class NotificationService:
 
     @staticmethod
     def prefs_of(user: User) -> dict[str, bool]:
-        prefs = {code: True for code in CATEGORIES}
+        prefs = {code: code != "daily" for code in CATEGORIES}
         raw = user.notify_prefs
         if not raw:
             return prefs
@@ -36,8 +38,8 @@ class NotificationService:
             return prefs
         if isinstance(stored, dict):
             for code in CATEGORIES:
-                if code in stored:
-                    prefs[code] = bool(stored[code])
+                if isinstance(stored.get(code), bool):
+                    prefs[code] = stored[code]
         return prefs
 
     @classmethod

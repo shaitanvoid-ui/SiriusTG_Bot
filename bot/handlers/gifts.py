@@ -31,7 +31,7 @@ CATALOGUE_PAGE_SIZE = 15
 def internal_cost(units: int) -> str:
     """Show every stored fraction; never silently round a financial obligation."""
     text = f"{from_units(units):.4f}".rstrip("0").rstrip(".")
-    return T.gift_internal_units.format(amount=text)
+    return T.gift_internal_units.format(amount=text.replace(".", ","))
 
 
 def status_text(status: str) -> str:

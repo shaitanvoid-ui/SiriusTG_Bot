@@ -79,6 +79,7 @@ USER root
 COPY --from=test-deps /opt/venv /opt/venv
 COPY --chown=sirius:sirius requirements-dev.txt pytest.ini ./
 COPY --chown=sirius:sirius tests ./tests
+COPY --chown=sirius:sirius scripts/ui_preview.py ./scripts/ui_preview.py
 
 USER sirius
 ENTRYPOINT []

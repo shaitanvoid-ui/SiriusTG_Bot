@@ -6,9 +6,12 @@ CRUD: список → карточка → правка заголовка/те
 
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import F, Router, html
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,12 +26,14 @@ from locales.ru import T
 router = Router(name="admin_instructions")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
+_TITLE_MAX_LEN = 100
+_BODY_MAX_LEN = 3_000
 
 
 async def _render_list(message, session: AsyncSession) -> None:
     pages = await InstructionRepo(session).get_active()
     text = T.admin_ins_root.format(count=len(pages))
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await message.edit_text(text, reply_markup=kb_ins_list(pages))
 
 
@@ -50,9 +55,22 @@ async def cb_open(callback: CallbackQuery, session: AsyncSession) -> None:
     if page is None or not page.is_active:
         await callback.answer(T.admin_ins_deleted, show_alert=True)
         return
-    text = T.admin_ins_card.format(id=page.id, title=html.quote(page.title), body=page.body)
-    with suppress(Exception):
-        await callback.message.edit_text(text[:4000], reply_markup=kb_ins_card(page.id))
+    text = T.admin_ins_card.format(
+        id=page.id, title=html.quote(page.title), body=page.body
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb_ins_card(page.id))
+    except TelegramBadRequest:
+        # Совместимость со старыми страницами с битой HTML-разметкой.
+        with ignore_unchanged():
+            await callback.message.edit_text(
+                T.admin_ins_card.format(
+                    id=page.id,
+                    title=html.quote(page.title),
+                    body=html.quote(page.body[:600]),
+                ),
+                reply_markup=kb_ins_card(page.id),
+            )
     await callback.answer()
 
 
@@ -64,7 +82,7 @@ async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.set_state(InstructionStates.waiting_new_title)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_ins_new_title_prompt, reply_markup=kb_ins_cancel()
         )
@@ -74,8 +92,8 @@ async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(InstructionStates.waiting_new_title, F.text)
 async def msg_new_title(message: Message, state: FSMContext) -> None:
     title = (message.text or "").strip()
-    if not title:
-        await message.answer(T.admin_ins_invalid)
+    if not title or len(title) > _TITLE_MAX_LEN:
+        await message.answer(T.admin_ins_title_invalid.format(max_len=_TITLE_MAX_LEN))
         return
     await state.update_data(ins_title=title)
     await state.set_state(InstructionStates.waiting_new_body)
@@ -88,8 +106,8 @@ async def msg_new_title(message: Message, state: FSMContext) -> None:
 @router.message(InstructionStates.waiting_new_body, F.text)
 async def msg_new_body(message: Message, state: FSMContext, session: AsyncSession) -> None:
     body = (message.text or "").strip()
-    if not body:
-        await message.answer(T.admin_ins_invalid)
+    if not body or len(body) > _BODY_MAX_LEN:
+        await message.answer(T.admin_ins_body_invalid.format(max_len=_BODY_MAX_LEN))
         return
     data = await state.get_data()
     title = data.get("ins_title", "")
@@ -118,7 +136,7 @@ async def cb_edit_title(callback: CallbackQuery, state: FSMContext, session: Asy
         return
     await state.set_state(InstructionStates.waiting_edit_title)
     await state.update_data(ins_id=page_id)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_ins_edit_title_prompt.format(title=html.quote(page.title)),
             reply_markup=kb_ins_cancel(),
@@ -138,7 +156,7 @@ async def cb_edit_body(callback: CallbackQuery, state: FSMContext, session: Asyn
         return
     await state.set_state(InstructionStates.waiting_edit_body)
     await state.update_data(ins_id=page_id)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_ins_edit_body_prompt.format(title=html.quote(page.title)),
             reply_markup=kb_ins_cancel(),
@@ -149,8 +167,8 @@ async def cb_edit_body(callback: CallbackQuery, state: FSMContext, session: Asyn
 @router.message(InstructionStates.waiting_edit_title, F.text)
 async def msg_edit_title(message: Message, state: FSMContext, session: AsyncSession) -> None:
     title = (message.text or "").strip()
-    if not title:
-        await message.answer(T.admin_ins_invalid)
+    if not title or len(title) > _TITLE_MAX_LEN:
+        await message.answer(T.admin_ins_title_invalid.format(max_len=_TITLE_MAX_LEN))
         return
     data = await state.get_data()
     repo = InstructionRepo(session)
@@ -163,8 +181,8 @@ async def msg_edit_title(message: Message, state: FSMContext, session: AsyncSess
 @router.message(InstructionStates.waiting_edit_body, F.text)
 async def msg_edit_body(message: Message, state: FSMContext, session: AsyncSession) -> None:
     body = (message.text or "").strip()
-    if not body:
-        await message.answer(T.admin_ins_invalid)
+    if not body or len(body) > _BODY_MAX_LEN:
+        await message.answer(T.admin_ins_body_invalid.format(max_len=_BODY_MAX_LEN))
         return
     data = await state.get_data()
     repo = InstructionRepo(session)

@@ -295,7 +295,7 @@ async def _render_payouts(message, session: AsyncSession) -> None:
                 T.admin_pa_payout_row.format(
                     id=p.id,
                     name=user_name,
-                    stars=f"{p.amount_stars:.2f}⭐",
+                    stars=stars(p.amount_stars),
                     rub=f"{p.amount_rub:.2f}",
                 ),
             )
@@ -304,7 +304,7 @@ async def _render_payouts(message, session: AsyncSession) -> None:
             T.admin_pa_payout_row.format(
                 id=p.id,
                 name=html.quote(user_name),
-                stars=f"{p.amount_stars:.2f}⭐",
+                stars=stars(p.amount_stars),
                 rub=f"{p.amount_rub:.2f}",
             )
         )
@@ -351,7 +351,7 @@ async def cb_payout_card(callback: CallbackQuery, session: AsyncSession) -> None
     text = T.admin_pa_payout_card.format(
         id=payout.id,
         user_info=html.quote(_user_label(user)),
-        stars=f"{payout.amount_stars:.2f}⭐",
+        stars=stars(payout.amount_stars),
         rub=f"{payout.amount_rub:.2f}",
         rate=f"{payout.rate_rub:g}",
         method=method_name,
@@ -388,7 +388,7 @@ async def cb_payout_paid(callback: CallbackQuery, session: AsyncSession, bot: Bo
             await bot.send_message(
                 tg_id,
                 T.notify_payout_paid.format(
-                    stars=f"{payout.amount_stars:.2f}⭐", rub=f"{payout.amount_rub:.2f}"
+                    stars=stars(payout.amount_stars), rub=f"{payout.amount_rub:.2f}"
                 ),
             )
     await callback.answer(T.admin_pa_payout_done_alert, show_alert=False)
@@ -413,7 +413,7 @@ async def cb_payout_reject(callback: CallbackQuery, session: AsyncSession, bot: 
             await bot.send_message(
                 tg_id,
                 T.notify_payout_rejected.format(
-                    stars=f"{payout.amount_stars:.2f}⭐", note_part=note_part
+                    stars=stars(payout.amount_stars), note_part=note_part
                 ),
             )
     await callback.answer(T.admin_pa_payout_rejected_alert, show_alert=False)

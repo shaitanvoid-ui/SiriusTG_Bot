@@ -57,6 +57,10 @@ async def _render_caption(session: AsyncSession, user: User) -> str:
         if user.debt > 0
         else ""
     )
+    if user.reserved_units > 0:
+        from db.money import from_units
+        debt_part = T.profile_reserved_part.format(reserved=stars(from_units(user.reserved_units))) + debt_part
+    debt_part += "\n\n" + T.profile_balance_note
 
     name = html.quote(user.first_name or "друг")
     return T.profile_caption.format(

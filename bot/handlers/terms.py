@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,7 +37,7 @@ async def cb_terms_page(
     data = await state.get_data()
     total_steps = int(data.get("total_steps") or await count_total_steps(session))
     text, kb = render_terms_page(page=page, total_steps=total_steps)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     await callback.answer()
 
@@ -52,9 +55,9 @@ async def cb_accept_terms(
     await ActionLogRepo(session).log(
         user_tg_id=callback.from_user.id, action="terms_accepted"
     )
-    await callback.answer("✅")
+    await callback.answer()
     # удаляем сообщение соглашения — оставляем чат чистым
-    with suppress(Exception):
+    with suppress(TelegramBadRequest):
         await callback.message.delete()
     total_steps = await count_total_steps(session)
     await show_captcha(callback.message, state, total_steps=total_steps)
@@ -66,6 +69,6 @@ async def cb_decline_terms(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.clear()
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(T.terms_declined)
     await callback.answer()

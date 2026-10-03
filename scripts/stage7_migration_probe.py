@@ -41,7 +41,7 @@ def run(path):
     if "copy" not in path.name or path.resolve().parent == Path("data").resolve():
         raise ValueError("Only an isolated disposable *copy* DB is allowed")
     before = snapshot(path)
-    migrate(path, "upgrade", "head")
+    migrate(path, "upgrade", "0015")
     with sqlite3.connect(path) as c:
         audit = c.execute("SELECT original_value,rounded_units,rounding_delta FROM money_migration_audit").fetchall()
         total_delta = Decimal(0)
@@ -57,7 +57,7 @@ def run(path):
     migrate(path, "downgrade", "0013")
     after = snapshot(path)
     assert before == after, "idle rollback must restore every original value"
-    migrate(path, "upgrade", "head")
+    migrate(path, "upgrade", "0015")
     print(json.dumps({"revision":"0015", "audit_fields":len(audit),
                       "sum_rounding_delta":str(total_delta), "opening_operations":operations,
                       "integrity":"ok", "fk_violations":0,

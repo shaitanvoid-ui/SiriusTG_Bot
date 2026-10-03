@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from html import escape
+from decimal import Decimal
 from typing import Iterable
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -59,9 +60,11 @@ def step(current: int, total: int) -> str:
     return f"<i>Шаг {current} из {total}</i>"
 
 
-def stars(amount: float) -> str:
-    """'15.00⭐' — единый стиль форматирования звёзд."""
-    return f"{amount:.2f}⭐"
+def stars(amount: float | Decimal | int) -> str:
+    """Legacy API name; internal liabilities are units, never Telegram Stars."""
+    value = Decimal(str(amount)).quantize(Decimal("0.0001"))
+    number = format(value, "f").rstrip("0").rstrip(".") if "." in format(value, "f") else format(value, "f")
+    return f"{number.replace('.', ',')} ед."
 
 
 def html_text(value: object) -> str:
@@ -144,8 +147,8 @@ def clock_mmss(ms: int) -> str:
 
 
 def brand_header(brand_name: str, tagline: str) -> str:
-    """Шапка бренда: '✦ <b>SIRIUS</b> ✦  ·  <i>Stars Hub</i>'."""
-    return f"✦ <b>{brand_name}</b> ✦  ·  <i>{tagline}</i>"
+    """A quiet two-line brand, using markup supported by Telegram fallback."""
+    return f"<b>{brand_name}</b>\n<i>{tagline}</i>"
 
 
 def kvline(label: str, value: str, *, pad: int = 14) -> str:

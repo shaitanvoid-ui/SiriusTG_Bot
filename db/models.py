@@ -712,3 +712,4 @@ __all__ = [
 
 
 import db.gift_models  # noqa: F401 -- register durable gift tables
+import db.antifraud_models  # noqa: F401 -- register durable antifraud state/evidence

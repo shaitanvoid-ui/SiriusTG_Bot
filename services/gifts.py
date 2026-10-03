@@ -66,7 +66,8 @@ class GiftService:
 
     @api_errors
     async def catalogue(self):
-        return await self.adapter.catalogue()
+        return tuple(g for g in await self.adapter.catalogue()
+                     if getattr(g, "kind", "ordinary") == "ordinary" and not getattr(g, "limited", False))
 
     async def account(self):
         return await self.adapter.sender_status()
@@ -90,7 +91,7 @@ class GiftService:
     async def _gift(self, gift_id, force=True):
         gifts = await self.adapter.catalogue(force=force)
         gift = next((g for g in gifts if g.id == gift_id), None)
-        if gift is None or not gift.available or gift.stars <= 0 or getattr(gift, "kind", "ordinary") != "ordinary":
+        if gift is None or not gift.available or gift.stars <= 0 or getattr(gift, "kind", "ordinary") != "ordinary" or getattr(gift, "limited", False):
             raise GiftServiceError("gift_unavailable")
         return gift
 
@@ -292,6 +293,9 @@ class GiftService:
                 user = await s.get(User, req.user_id)
                 username = user.username
             peer = await asyncio.wait_for(self.adapter.resolve_recipient(req.recipient_tg_id, username), 30)
+            gift = await self._gift(req.gift_id)
+            if gift.stars != req.stars:
+                raise GiftServiceError("price_changed")
             prepared = await asyncio.wait_for(self.adapter.prepare(req.gift_id, peer, req.stars), 30)
             async with self.transaction() as s:
                 current = await s.get(GiftRequest, req.id)
