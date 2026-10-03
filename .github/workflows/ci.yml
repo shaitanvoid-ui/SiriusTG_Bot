@@ -1,0 +1,65 @@
+name: SIRIUS CI
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sirius-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Isolated regression suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate isolated test configuration
+        run: docker compose -f docker-compose.test.yml config --quiet
+      - name: Build and run tests without Telegram access
+        run: >-
+          docker compose -f docker-compose.test.yml run --rm --build test
+          python -m pytest -o addopts='' -q -p no:cacheprovider --tb=short
+
+  runtime:
+    name: Runtime build and image contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build production image
+        run: docker build --target runtime -t sirius-runtime:ci .
+      - name: Verify pinned dependencies
+        run: docker run --rm --network none --entrypoint python sirius-runtime:ci -m pip check
+      - name: Verify Linux entrypoint
+        run: docker run --rm --network none --entrypoint /bin/sh sirius-runtime:ci -n /usr/local/bin/sirius-entrypoint
+      - name: Verify runtime user, composition, syntax and imports
+        run: |
+          docker run --rm --network none --user 10001:10001 --read-only \
+            --tmpfs /tmp:size=64m,mode=1777 \
+            -e ENV=test -e BOT_TOKEN=1234567890:LOCAL_TEST_TOKEN_DO_NOT_USE \
+            -e OWNER_ID=1 -e FERNET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -e DATABASE_URL=sqlite+aiosqlite:////tmp/sirius-ci.db \
+            -e PYTHONPYCACHEPREFIX=/tmp/pycache \
+            --entrypoint python sirius-runtime:ci -c '
+          import os, pathlib, importlib.util, compileall
+          assert os.getuid() == 10001
+          assert importlib.util.find_spec("pytest") is None
+          assert not any(pathlib.Path("/app", p).exists() for p in [".env", ".git", "data/bot.db", "docs/NEXT_CHAT_PROMPT.md"])
+          assert compileall.compile_dir("/app", quiet=1)
+          import main
+          assert callable(main.run)
+          print("Runtime contracts passed; no network or production configuration used")
+          '

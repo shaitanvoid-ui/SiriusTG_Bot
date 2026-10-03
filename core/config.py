@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
         env_ignore_empty=True,
+        hide_input_in_errors=True,
     )
 
     env: Literal["production", "development", "test"] = "production"
