@@ -327,7 +327,7 @@ def test_state_scoped_callbacks_have_stale_fallbacks() -> None:
     assert sorted(set(missing)) == []
 
 
-def test_keyboards_use_gifts_and_keep_future_stages_hidden() -> None:
+def test_keyboards_expose_implemented_gifts_and_antifraud() -> None:
     markups = _sample_markups()
     callbacks = _all_callbacks(markups)
     texts = [
@@ -341,7 +341,8 @@ def test_keyboards_use_gifts_and_keep_future_stages_hidden() -> None:
     assert "gift:open" in callbacks
     assert not any(callback.startswith("withdraw") for callback in callbacks)
     assert not any(":shon:" in callback or ":shoff:" in callback for callback in callbacks)
-    assert not any("shadow" in text for text in texts)
+    assert "adm:af:open" in callbacks
+    assert not any("nft" in text or "сезон" in text or "миссии" in text for text in texts)
 
 
 def test_locale_format_calls_match_template_placeholders() -> None:
@@ -426,6 +427,11 @@ def test_fsm_update_payloads_are_reviewed_json_primitives() -> None:
         "gift_admin_action",
         "gift_admin_evidence",
         "gift_admin_token",
+        "antifraud_expiry",
+        "antifraud_owner",
+        "antifraud_user_id",
+        "antifraud_reason",
+        "antifraud_token",
         "username",
     }
     observed: set[str] = set()
