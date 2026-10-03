@@ -1,15 +1,16 @@
 """Хендлер отзывов — FSM flow (Этап 8)."""
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.handlers.menu import edit_to_main_menu
 from bot.states.reviews import ReviewStates
 from bot.keyboards.reviews import (
     kb_review_anonymity,
@@ -19,11 +20,13 @@ from bot.keyboards.reviews import (
     kb_review_success,
     kb_review_text_step,
 )
+from bot.keyboards.sections import kb_help
 from core.config import settings as app_settings
 from db.models import User
 from services.reviews import ReviewService
 from services.settings import SettingsService
 from locales.ru import T
+from utils.ui import html_text
 
 
 router = Router(name="reviews")
@@ -31,6 +34,41 @@ router = Router(name="reviews")
 
 def _stars_line(rating: int) -> str:
     return "⭐" * rating + "☆" * (5 - rating)
+
+
+def _preview(text: str, *, limit: int = 100) -> str:
+    clipped = text[:limit] + ("…" if len(text) > limit else "")
+    return f"<i>{html_text(clipped)}</i>"
+
+
+async def _edit_state_card(
+    message: Message,
+    state: FSMContext,
+    text: str,
+    reply_markup,
+) -> None:
+    """Сохранять FSM в одной карточке и не оставлять устаревшие экраны."""
+    data = await state.get_data()
+    chat_id = data.get("ui_chat_id")
+    message_id = data.get("ui_message_id")
+    edited = False
+    if chat_id and message_id:
+        try:
+            await message.bot.edit_message_text(
+                text,
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            edited = True
+        except TelegramBadRequest:
+            pass
+    if not edited:
+        sent = await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        await state.update_data(ui_chat_id=sent.chat.id, ui_message_id=sent.message_id)
+    with suppress(TelegramBadRequest):
+        await message.delete()
 
 
 @router.callback_query(F.data == "rev:intro")
@@ -64,7 +102,7 @@ async def cb_review_intro(callback: CallbackQuery, db_user: User, session: Async
         max_len=max_len,
         reward=reward,
     )
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             text,
             reply_markup=kb_review_intro(),
@@ -78,8 +116,12 @@ async def cb_review_start(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None:
         return
     await state.set_state(ReviewStates.rating)
-    await state.update_data(rating=0)
-    with suppress(Exception):
+    await state.update_data(
+        rating=0,
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.review_rating_page,
             reply_markup=kb_review_rating(0),
@@ -94,7 +136,7 @@ async def cb_review_star(callback: CallbackQuery, state: FSMContext) -> None:
         return
     rating = int(callback.data.split(":")[2])
     await state.update_data(rating=rating)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_reply_markup(reply_markup=kb_review_rating(rating))
     await callback.answer()
 
@@ -106,7 +148,7 @@ async def cb_review_rating_next(callback: CallbackQuery, state: FSMContext, sess
     data = await state.get_data()
     rating = data.get("rating", 0)
     if rating == 0:
-        await callback.answer("Сначала выбери рейтинг.", show_alert=True)
+        await callback.answer(T.review_rating_required_alert, show_alert=True)
         return
     await state.set_state(ReviewStates.text)
 
@@ -115,7 +157,7 @@ async def cb_review_rating_next(callback: CallbackQuery, state: FSMContext, sess
     max_len = await s.get_int("review.max_text_length", 500)
     rating_line = T.review_rating_stars.format(stars=_stars_line(rating), rating=rating)
 
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.review_text_page.format(rating_line=rating_line, min_len=min_len, max_len=max_len),
             reply_markup=kb_review_text_step(),
@@ -130,8 +172,12 @@ async def cb_review_text(message: Message, state: FSMContext, session: AsyncSess
     svc = ReviewService(session)
     ok, reason = await svc.filter_text(text_val)
     if not ok:
-        with suppress(Exception):
-            await message.answer(T.review_filter_fail.format(reason=reason), parse_mode="HTML")
+        await _edit_state_card(
+            message,
+            state,
+            T.review_filter_fail.format(reason=html_text(reason or T.error_generic)),
+            kb_review_text_step(),
+        )
         return
 
     await state.update_data(text=text_val)
@@ -139,15 +185,15 @@ async def cb_review_text(message: Message, state: FSMContext, session: AsyncSess
     data = await state.get_data()
     rating = data.get("rating", 0)
     rating_line = T.review_rating_stars.format(stars=_stars_line(rating), rating=rating)
-    preview = f"<i>{text_val[:100]}{'...' if len(text_val) > 100 else ''}</i>"
-
-    with suppress(Exception):
-        await message.answer(
-            T.review_anonymity_page.format(rating_line=rating_line, text_preview=preview),
-            reply_markup=kb_review_anonymity(),
-            parse_mode="HTML",
-        )
-        await message.delete()
+    await _edit_state_card(
+        message,
+        state,
+        T.review_anonymity_page.format(
+            rating_line=rating_line,
+            text_preview=_preview(text_val),
+        ),
+        kb_review_anonymity(),
+    )
 
 
 @router.callback_query(F.data.in_({"rev:anon_yes", "rev:anon_no"}), ReviewStates.anonymity)
@@ -163,9 +209,9 @@ async def cb_review_anonymity(callback: CallbackQuery, state: FSMContext) -> Non
     text_val = data.get("text", "")
     rating_line = T.review_rating_stars.format(stars=_stars_line(rating), rating=rating)
     anon_line = T.review_anon_anon if is_anon else T.review_anon_public
-    preview = f"<i>{text_val[:100]}{'...' if len(text_val) > 100 else ''}</i>"
+    preview = _preview(text_val)
 
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.review_confirm_page.format(
                 rating_line=rating_line,
@@ -193,15 +239,24 @@ async def cb_review_confirm(
     svc = ReviewService(session)
     review, err = await svc.create_review(db_user, rating, text_val, is_anon)
     if not review:
-        await callback.answer(T.review_filter_fail_alert.format(reason=err), show_alert=True)
+        await callback.answer(
+            T.review_filter_fail_alert.format(reason=str(err or T.error_generic)),
+            show_alert=True,
+        )
         await state.clear()
+        with ignore_unchanged():
+            await callback.message.edit_text(
+                T.section_help_caption,
+                reply_markup=kb_help(),
+                parse_mode="HTML",
+            )
         return
 
     s = SettingsService(session)
     reward = await s.get_float("review.reward", 1.0)
     reward_line = T.review_success_reward.format(reward=reward) if reward > 0 else ""
 
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.review_success.format(reward_line=reward_line),
             reply_markup=kb_review_success(),
@@ -220,9 +275,91 @@ async def cb_review_confirm(
 
 @router.callback_query(F.data == "rev:cancel")
 async def cb_review_cancel(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession, db_user: User | None = None
+    callback: CallbackQuery, state: FSMContext
 ) -> None:
     await state.clear()
-    if callback.message is not None and db_user is not None:
-        await edit_to_main_menu(callback.message, session, db_user)
+    if callback.message is not None:
+        with ignore_unchanged():
+            await callback.message.edit_text(
+                T.section_help_caption,
+                reply_markup=kb_help(),
+                parse_mode="HTML",
+            )
     await callback.answer()
+
+
+@router.callback_query(F.data == "rev:back:rating", ReviewStates.text)
+async def cb_review_back_rating(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    rating = int(data.get("rating", 0))
+    await state.set_state(ReviewStates.rating)
+    with ignore_unchanged():
+        await callback.message.edit_text(
+            T.review_rating_page,
+            reply_markup=kb_review_rating(rating),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "rev:back:text", ReviewStates.anonymity)
+async def cb_review_back_text(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    rating = int(data.get("rating", 0))
+    settings = SettingsService(session)
+    await state.set_state(ReviewStates.text)
+    with ignore_unchanged():
+        await callback.message.edit_text(
+            T.review_text_page.format(
+                rating_line=T.review_rating_stars.format(
+                    stars=_stars_line(rating), rating=rating
+                ),
+                min_len=await settings.get_int("review.min_text_length", 30),
+                max_len=await settings.get_int("review.max_text_length", 500),
+            ),
+            reply_markup=kb_review_text_step(),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "rev:back:anon", ReviewStates.confirm)
+async def cb_review_back_anonymity(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    rating = int(data.get("rating", 0))
+    await state.set_state(ReviewStates.anonymity)
+    with ignore_unchanged():
+        await callback.message.edit_text(
+            T.review_anonymity_page.format(
+                rating_line=T.review_rating_stars.format(
+                    stars=_stars_line(rating), rating=rating
+                ),
+                text_preview=_preview(str(data.get("text", ""))),
+            ),
+            reply_markup=kb_review_anonymity(),
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.message(ReviewStates.text)
+async def msg_review_non_text(message: Message) -> None:
+    await message.answer(T.review_text_input_required)
+
+
+@router.callback_query(F.data.startswith("rev:"))
+async def cb_review_stale(callback: CallbackQuery) -> None:
+    await callback.answer(T.stale_screen_alert, show_alert=True)

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.base import utcnow
 from db.models import Promo
 from db.repositories.base import BaseRepo
 
@@ -67,6 +68,56 @@ class PromoRepo(BaseRepo):
             update(Promo)
             .where(Promo.id == promo_id)
             .values(used_count=Promo.used_count + delta)
+        )
+
+    async def try_reserve_use(
+        self, promo_id: int, *, at: datetime | None = None
+    ) -> bool:
+        """Атомарно занимает одну непросроченную активацию."""
+        checked_at = at or utcnow()
+        result = await self.session.execute(
+            update(Promo)
+            .where(
+                Promo.id == promo_id,
+                Promo.is_active.is_(True),
+                or_(Promo.expires_at.is_(None), Promo.expires_at > checked_at),
+                or_(
+                    Promo.max_activations == 0,
+                    Promo.used_count < Promo.max_activations,
+                ),
+            )
+            .values(
+                used_count=Promo.used_count + 1,
+                is_active=case(
+                    (
+                        (Promo.max_activations > 0)
+                        & (Promo.used_count + 1 >= Promo.max_activations),
+                        False,
+                    ),
+                    else_=Promo.is_active,
+                ),
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        return bool(result.rowcount)
+
+    async def release_use(self, promo_id: int) -> None:
+        """Откатывает резерв, если пользователь уже активировал промокод."""
+        await self.session.execute(
+            update(Promo)
+            .where(Promo.id == promo_id, Promo.used_count > 0)
+            .values(
+                is_active=case(
+                    (
+                        (Promo.max_activations > 0)
+                        & (Promo.used_count >= Promo.max_activations),
+                        True,
+                    ),
+                    else_=Promo.is_active,
+                ),
+                used_count=Promo.used_count - 1,
+            )
+            .execution_options(synchronize_session="fetch")
         )
 
     async def delete(self, promo_id: int) -> bool:

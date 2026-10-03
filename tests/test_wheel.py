@@ -43,7 +43,7 @@ async def test_paid_spin_charges_cost(session):
     assert res.status == SpinStatus.OK
 
     fresh = await UserRepo(session).get_by_id(user.id)
-    assert round(fresh.balance, 2) == 4.2
+    assert fresh.balance_units == 42000
 
 
 async def test_paid_spin_not_enough(session):

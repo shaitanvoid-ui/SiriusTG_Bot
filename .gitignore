@@ -14,11 +14,12 @@ logs/
 *.session-journal
 .idea/
 .vscode/
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
+.claude/
 .DS_Store
 .pytest_cache/
 .coverage
 htmlcov/
+.playwright-mcp/
+.ruff_cache/
 dist/
 build/

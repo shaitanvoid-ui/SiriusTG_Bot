@@ -13,18 +13,25 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Sponsor, User
+from db.money import from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.sponsor import SponsorRepo
 from db.repositories.user import UserRepo
 from db.repositories.user_subscription import UserSubscriptionRepo
 from db.repositories.user_task_completion import UserTaskCompletionRepo
 from services.settings import SettingsService
-from services.sponsor import SponsorService
+from services.sponsor import (
+    SponsorService,
+    SubscriptionCheckStatus,
+    normalize_check_status,
+)
 
 
 class TaskStatus(StrEnum):
+    BLOCKED = "blocked"
     OK = "ok"
     NOT_SUBSCRIBED = "not_subscribed"
+    UNAVAILABLE = "unavailable"
     ALREADY_DONE = "already_done"
     NOT_FOUND = "not_found"
     INACTIVE = "inactive"
@@ -75,6 +82,8 @@ class TasksService:
         user: User,
         sponsor_id: int,
     ) -> ClaimResult:
+        if not await UserRepo(self.session).rewards_allowed(user.id):
+            return ClaimResult(status=TaskStatus.BLOCKED)
         if not await self.enabled():
             return ClaimResult(status=TaskStatus.DISABLED)
 
@@ -84,7 +93,8 @@ class TasksService:
             return ClaimResult(status=TaskStatus.NOT_FOUND)
         if not sponsor.is_active or sponsor.is_required:
             return ClaimResult(status=TaskStatus.INACTIVE, sponsor_title=sponsor.title)
-        if sponsor.reward <= 0:
+        reward = from_units(settlement_units(sponsor.reward))
+        if reward <= 0:
             return ClaimResult(status=TaskStatus.NO_REWARD, sponsor_title=sponsor.title)
         if sponsor.subs_limit > 0 and sponsor.subs_counter >= sponsor.subs_limit:
             await repo.set_active(sponsor.id, False)
@@ -97,42 +107,51 @@ class TasksService:
 
         # проверяем подписку точечно (используем SponsorService для одного канала)
         sponsor_svc = SponsorService(repo, UserSubscriptionRepo(self.session))
-        is_sub = await sponsor_svc.check_one(bot, sponsor=sponsor, tg_id=user.tg_id)
-        if not is_sub:
+        check_status = normalize_check_status(
+            await sponsor_svc.check_one(bot, sponsor=sponsor, tg_id=user.tg_id)
+        )
+        if check_status == SubscriptionCheckStatus.UNAVAILABLE:
+            return ClaimResult(status=TaskStatus.UNAVAILABLE, sponsor_title=sponsor.title)
+        if check_status == SubscriptionCheckStatus.NOT_SUBSCRIBED:
             return ClaimResult(status=TaskStatus.NOT_SUBSCRIBED, sponsor_title=sponsor.title)
 
-        # начисляем
-        await completion_repo.create(
-            user_id=user.id, sponsor_id=sponsor.id, reward=sponsor.reward
+        if not await UserRepo(self.session).lock_rewards_allowed(user.id):
+            return ClaimResult(status=TaskStatus.BLOCKED)
+
+        # Резервируем completion и слот спонсора до начисления. Конфликты UQ
+        # превращаются в идемпотентный ответ, а не в IntegrityError.
+        completion = await completion_repo.create_if_absent(
+            user_id=user.id, sponsor_id=sponsor.id, reward=reward
         )
-        await UserRepo(self.session).add_balance(user.id, sponsor.reward)
-        await repo.inc_counter(sponsor.id, 1)
+        if completion is None:
+            return ClaimResult(status=TaskStatus.ALREADY_DONE, sponsor_title=sponsor.title)
+        if not await repo.try_reserve_counter(sponsor.id):
+            await completion_repo.delete(completion.id)
+            return ClaimResult(status=TaskStatus.LIMIT_REACHED, sponsor_title=sponsor.title)
+
+        # начисляем
+        await UserRepo(self.session).add_balance(user.id, reward, reason="task_reward")
 
         # доля партнёра, если спонсор партнёрский (Этап 10)
         if sponsor.partner_id is not None:
             from services.partner import PartnerService
 
             await PartnerService(self.session, self.settings).accrue_sponsor_share(
-                sponsor, sponsor.reward
+                sponsor, reward
             )
-
-        # авто-выкл при достижении лимита (после инкремента)
-        refreshed = await repo.get(sponsor.id)
-        if refreshed and refreshed.subs_limit > 0 and refreshed.subs_counter >= refreshed.subs_limit:
-            await repo.set_active(sponsor.id, False)
 
         await ActionLogRepo(self.session).log(
             user_tg_id=user.tg_id,
             action="task_done",
-            payload={"sponsor_id": sponsor.id, "reward": sponsor.reward},
+            payload={"sponsor_id": sponsor.id, "reward": reward},
         )
 
         fresh_user = await UserRepo(self.session).get_by_id(user.id)
-        balance = round(fresh_user.balance, 2) if fresh_user else round(user.balance + sponsor.reward, 2)
+        balance = round(fresh_user.balance, 2) if fresh_user else round(user.balance + reward, 2)
 
         return ClaimResult(
             status=TaskStatus.OK,
-            reward=round(sponsor.reward, 2),
+            reward=float(reward),
             balance=balance,
             sponsor_title=sponsor.title,
         )

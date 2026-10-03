@@ -6,9 +6,12 @@ FSM: `prof:open` → 🎟 → intro-карточка → «Ввести код»
 
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +23,7 @@ from db.repositories.user import UserRepo
 from locales.ru import T
 from services.promo import PromoService, PromoStatus
 from services.settings import SettingsService
-from utils.ui import stars
+from utils.ui import html_text, stars
 
 
 router = Router(name="promo")
@@ -38,7 +41,7 @@ async def cb_open(
         return
     max_len = await PromoService(session, SettingsService(session)).max_code_length()
     text = T.promo_intro.format(max_len=max_len)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb_promo_intro())
     await callback.answer()
 
@@ -49,7 +52,11 @@ async def cb_start(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.set_state(PromoStates.waiting_code)
-    with suppress(Exception):
+    await state.update_data(
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
         await callback.message.edit_text(T.promo_waiting, reply_markup=kb_promo_waiting())
     await callback.answer()
 
@@ -66,7 +73,7 @@ async def cb_cancel(
         return
     max_len = await PromoService(session, SettingsService(session)).max_code_length()
     text = T.promo_intro.format(max_len=max_len)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb_promo_intro())
     await callback.answer()
 
@@ -88,22 +95,19 @@ async def msg_code(
     raw = message.text or ""
     res = await svc.redeem(user=user, raw_code=raw)
 
-    # удалим введённое юзером сообщение, чтобы не засорять чат
-    with suppress(Exception):
-        await message.delete()
-
-    await state.clear()
+    data = await state.get_data()
 
     if res.status == PromoStatus.OK:
         text = T.promo_ok.format(
-            code=res.code,
+            code=html_text(res.code),
             reward=stars(res.reward),
             balance=stars(res.balance),
         )
+    elif res.status == PromoStatus.BLOCKED:
+        text = T.reward_restricted
     elif res.status == PromoStatus.HONEYPOT_BANNED:
         text = T.promo_honeypot_banned
-        await message.answer(text)
-        return
+        markup = None
     elif res.status == PromoStatus.NOT_FOUND:
         text = T.promo_not_found
     elif res.status == PromoStatus.ALREADY_USED:
@@ -120,5 +124,33 @@ async def msg_code(
         text = T.promo_empty
     else:
         text = T.error_generic
+    if res.status != PromoStatus.HONEYPOT_BANNED:
+        markup = kb_promo_result()
 
-    await message.answer(text, reply_markup=kb_promo_result())
+    edited = False
+    chat_id = data.get("ui_chat_id")
+    message_id = data.get("ui_message_id")
+    if chat_id and message_id:
+        with ignore_unchanged():
+            await message.bot.edit_message_text(
+                text,
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=markup,
+            )
+            edited = True
+    if not edited:
+        await message.answer(text, reply_markup=markup)
+    with suppress(TelegramBadRequest):
+        await message.delete()
+    await state.clear()
+
+
+@router.message(PromoStates.waiting_code)
+async def msg_code_non_text(message: Message) -> None:
+    await message.answer(T.text_input_required)
+
+
+@router.callback_query(F.data.startswith("promo:"))
+async def cb_promo_stale(callback: CallbackQuery) -> None:
+    await callback.answer(T.stale_screen_alert, show_alert=True)

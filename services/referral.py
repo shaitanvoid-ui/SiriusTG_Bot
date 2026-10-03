@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from core.logger import get_logger
 from db.models import ReferralSource, User
+from db.money import from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.referral import ReferralRepo
 from db.repositories.user import UserRepo
@@ -73,20 +74,20 @@ class ReferralService:
             return AttachResult(False, "already_attached")
 
         referrer = await self.user_repo.get_by_tg_id(referrer_tg_id)
-        if referrer is None or referrer.is_banned or referrer.is_deleted:
+        if referrer is None or not await self.user_repo.rewards_allowed(referrer.id) or not await self.user_repo.rewards_allowed(user.id):
             return AttachResult(False, "bad_referrer")
 
         daily_limit = await self.settings.get_int("ref.daily_limit", 0)
-        if daily_limit > 0:
-            today_count = await self.ref_repo.count_today_by_referrer(referrer.id)
-            if today_count >= daily_limit:
-                return AttachResult(False, "limit")
-
-        await self.ref_repo.create(
+        referral = await self.ref_repo.create_if_absent(
             referrer_user_id=referrer.id,
             referred_user_id=user.id,
             source=source,
+            daily_limit=daily_limit,
         )
+        if referral is None:
+            if await self.ref_repo.get_by_referred(user.id) is not None:
+                return AttachResult(False, "already_attached")
+            return AttachResult(False, "limit" if daily_limit > 0 else "already_attached")
         await self.user_repo.set_referrer(user.tg_id, referrer_tg_id)
         user.referrer_tg_id = referrer_tg_id
         await self.user_repo.inc_ref_count(referrer.id, +1)
@@ -104,9 +105,12 @@ class ReferralService:
         ref = await self.ref_repo.get_by_referred(user.id)
         if ref is None or ref.is_confirmed:
             return None
-        reward = await self.settings.get_float("ref.reward", 3.0)
-        await self.ref_repo.confirm(ref.id, reward=reward)
-        await self.user_repo.add_balance(ref.referrer_user_id, reward)
+        if not await self.user_repo.lock_rewards_allowed(user.id) or not await self.user_repo.lock_rewards_allowed(ref.referrer_user_id):
+            return None
+        reward = float(from_units(settlement_units(await self.settings.get_float("ref.reward", 3.0))))
+        if not await self.ref_repo.confirm(ref.id, reward=reward):
+            return None
+        await self.user_repo.add_balance(ref.referrer_user_id, reward, reason="referral_reward")
         await self.user_repo.inc_confirmed_ref_count(ref.referrer_user_id, +1)
         referrer = await self.user_repo.get_by_id(ref.referrer_user_id)
         if referrer is None:
@@ -142,9 +146,11 @@ class ReferralService:
         if ref is None or not ref.is_confirmed or ref.is_matured:
             return None
         amount = ref.reward_amount
-        debt = await self.user_repo.subtract_with_debt(ref.referrer_user_id, amount)
+        if not await self.ref_repo.claim_loss(ref.id):
+            return None
+        debt = await self.user_repo.subtract_with_debt(ref.referrer_user_id, amount, reason="referral_reversal")
         await self.user_repo.inc_confirmed_ref_count(ref.referrer_user_id, -1)
-        await self.ref_repo.mark_lost(ref.id, debt=debt)
+        await self.ref_repo.add_loss_debt(ref.id, debt)
         referrer = await self.user_repo.get_by_id(ref.referrer_user_id)
         if referrer is None:
             return None
@@ -181,8 +187,8 @@ class ReferralService:
         items = await self.ref_repo.list_for_maturation(maturation_days=days, limit=500)
         matured = 0
         for ref in items:
-            await self.ref_repo.mark_matured(ref.id)
-            matured += 1
+            if await self.ref_repo.mark_matured(ref.id):
+                matured += 1
         if matured:
             log.info("ref_matured_batch", count=matured)
         return matured
@@ -190,4 +196,11 @@ class ReferralService:
     # ---------- статистика ----------
 
     async def stats(self, user_id: int) -> dict[str, float]:
-        return await self.ref_repo.stats_for_referrer(user_id)
+        stats = await self.ref_repo.stats_for_referrer(user_id)
+        # Referral.debt_amount — историческая величина конкретных откатов и
+        # никогда не уменьшается. В интерфейсе нужен фактический непогашенный
+        # долг пользователя, который UserRepo.add_balance постепенно закрывает.
+        user = await self.user_repo.get_by_id(user_id)
+        stats["historical_debt"] = stats["debt"]
+        stats["debt"] = round(float(user.debt), 2) if user else 0.0
+        return stats

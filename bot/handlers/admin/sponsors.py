@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 import re
 from contextlib import suppress
 
-from aiogram import Bot, F, Router
+from aiogram import Bot, F, Router, html
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -46,14 +47,14 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
 async def cb_root(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(T.admin_root, reply_markup=kb_admin_root())
     await callback.answer()
 
 
 @router.callback_query(F.data == "adm:noop")
 async def cb_noop(callback: CallbackQuery) -> None:
-    await callback.answer("🛠 Скоро", show_alert=False)
+    await callback.answer(T.soon_alert, show_alert=False)
 
 
 # ---------- sponsors list ----------
@@ -69,7 +70,7 @@ async def _render_sponsors_list(callback: CallbackQuery, session: AsyncSession) 
     )
     text = T.admin_sponsors_root.format(count_line=count_line)
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(text, reply_markup=kb_sponsors_list(sponsors))
 
 
@@ -99,7 +100,7 @@ def _format_card(s: Sponsor) -> str:
     limit_part = f" / лимит {s.subs_limit}" if s.subs_limit else ""
     stats_line = T.admin_sponsor_stats.format(counter=s.subs_counter, limit_part=limit_part)
     return T.admin_sponsor_card.format(
-        title=s.title,
+        title=html.quote(s.title),
         id=s.id,
         kind=kind,
         ident_line=ident,
@@ -111,7 +112,7 @@ def _format_card(s: Sponsor) -> str:
 
 async def _render_card(callback: CallbackQuery, sponsor: Sponsor) -> None:
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
                 _format_card(sponsor),
                 reply_markup=kb_sponsor_card(sponsor),
@@ -184,7 +185,7 @@ async def cb_delete_ask(callback: CallbackQuery, session: AsyncSession) -> None:
         await callback.answer(T.admin_sponsor_deleted, show_alert=True)
         return
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
                 _format_card(sponsor) + "\n\n<b>Удалить этого спонсора?</b>",
                 reply_markup=kb_sponsor_delete_confirm(sid),
@@ -210,7 +211,7 @@ async def cb_add_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddSponsorStates.waiting_kind)
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(T.addsp_step1, reply_markup=kb_add_kind())
     await callback.answer()
 
@@ -234,11 +235,11 @@ async def cb_add_kind(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(kind=kind)
     if kind == SponsorKind.PUBLIC.value:
         await state.set_state(AddSponsorStates.waiting_chat)
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(T.addsp_step2_public, reply_markup=kb_add_cancel())
     else:
         await state.set_state(AddSponsorStates.waiting_invite)
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(T.addsp_step2_private, reply_markup=kb_add_cancel())
     await callback.answer()
 
@@ -279,7 +280,7 @@ async def msg_chat(message: Message, state: FSMContext, bot: Bot) -> None:
         return
     await state.update_data(chat_id=chat_id, username=username, suggested_title=title)
     await state.set_state(AddSponsorStates.waiting_title)
-    hint = f"\n\nПодсказка: <b>{title}</b>" if title else ""
+    hint = f"\n\nПодсказка: <b>{html.quote(title)}</b>" if title else ""
     await message.answer(T.addsp_step3 + hint, reply_markup=kb_add_cancel())
 
 
@@ -311,7 +312,7 @@ async def msg_private_forward(message: Message, state: FSMContext, bot: Bot) -> 
         return
     await state.update_data(chat_id=fwd.id, suggested_title=fwd.title or "")
     await state.set_state(AddSponsorStates.waiting_title)
-    hint = f"\n\nПодсказка: <b>{fwd.title}</b>" if fwd.title else ""
+    hint = f"\n\nПодсказка: <b>{html.quote(fwd.title)}</b>" if fwd.title else ""
     await message.answer(T.addsp_step4_private + hint, reply_markup=kb_add_cancel())
 
 
@@ -334,7 +335,7 @@ async def msg_title(message: Message, state: FSMContext, session: AsyncSession) 
     )
     await state.clear()
     await message.answer(
-        T.addsp_created.format(title=sponsor.title),
+        T.addsp_created.format(title=html.quote(sponsor.title)),
         reply_markup=kb_admin_root(),
     )
 
@@ -358,9 +359,11 @@ async def cb_edit_reward(
     await state.set_state(EditSponsorStates.waiting_reward)
     await state.update_data(sponsor_id=sid)
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
-                T.editsp_reward_prompt.format(title=s.title, current=s.reward),
+                T.editsp_reward_prompt.format(
+                    title=html.quote(s.title), current=s.reward
+                ),
                 reply_markup=kb_add_cancel(),
             )
     await callback.answer()
@@ -381,7 +384,7 @@ async def msg_edit_reward(
     except ValueError:
         await message.answer(T.editsp_reward_invalid, reply_markup=kb_add_cancel())
         return
-    if reward < 0 or reward > 1_000_000:
+    if not math.isfinite(reward) or reward < 0 or reward > 1_000_000:
         await message.answer(T.editsp_reward_invalid, reply_markup=kb_add_cancel())
         return
     reward = round(reward, 2)
@@ -397,10 +400,11 @@ async def msg_edit_reward(
     await state.clear()
     if s is not None:
         await message.answer(
-            T.editsp_reward_saved.format(title=s.title, reward=reward),
+            T.editsp_reward_saved.format(title=html.quote(s.title), reward=reward)
+            + "\n\n"
+            + _format_card(s),
             reply_markup=kb_sponsor_card(s),
         )
-        await message.answer(_format_card(s), reply_markup=kb_sponsor_card(s))
 
 
 @router.callback_query(F.data.startswith("adm:sp:edit_lm:"))
@@ -420,9 +424,11 @@ async def cb_edit_limit(
     await state.set_state(EditSponsorStates.waiting_subs_limit)
     await state.update_data(sponsor_id=sid)
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
-                T.editsp_limit_prompt.format(title=s.title, current=s.subs_limit),
+                T.editsp_limit_prompt.format(
+                    title=html.quote(s.title), current=s.subs_limit
+                ),
                 reply_markup=kb_add_cancel(),
             )
     await callback.answer()
@@ -453,10 +459,11 @@ async def msg_edit_limit(
     await state.clear()
     if s is not None:
         await message.answer(
-            T.editsp_limit_saved.format(title=s.title, limit=limit),
+            T.editsp_limit_saved.format(title=html.quote(s.title), limit=limit)
+            + "\n\n"
+            + _format_card(s),
             reply_markup=kb_sponsor_card(s),
         )
-        await message.answer(_format_card(s), reply_markup=kb_sponsor_card(s))
 
 
 # ---------- helpers ----------

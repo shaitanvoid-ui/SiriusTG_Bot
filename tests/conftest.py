@@ -11,11 +11,11 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
 import db.models  # noqa: F401  — регистрация всех таблиц в Base.metadata
 from db.base import Base
+from db.engine import create_app_engine
 from db.repositories.setting import SettingRepo
 from services.settings import DEFAULTS, SettingsService
 
@@ -23,7 +23,7 @@ from services.settings import DEFAULTS, SettingsService
 @pytest_asyncio.fixture
 async def engine(tmp_path):
     db_file = tmp_path / "test.db"
-    eng = create_async_engine(f"sqlite+aiosqlite:///{db_file}", future=True)
+    eng = create_app_engine(f"sqlite+aiosqlite:///{db_file}")
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     try:

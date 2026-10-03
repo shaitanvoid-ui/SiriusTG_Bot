@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 
-from aiogram import Bot
+from aiogram import Bot, html
 from aiogram.exceptions import TelegramAPIError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -31,7 +31,11 @@ from db.session import SessionLocal
 from locales.ru import T
 from services.notifications import NotificationService
 from services.settings import SettingsService
-from services.sponsor import SponsorService
+from services.sponsor import (
+    SponsorService,
+    SubscriptionCheckStatus,
+    normalize_check_status,
+)
 from utils.ui import stars
 
 
@@ -69,8 +73,10 @@ async def _recheck_one(bot: Bot, *, completion_id: int) -> bool:
                 return False
 
             sponsor_svc = SponsorService(sponsor_repo, UserSubscriptionRepo(session))
-            is_sub = await sponsor_svc.check_one(bot, sponsor=sponsor, tg_id=user.tg_id)
-            if is_sub:
+            check_status = normalize_check_status(
+                await sponsor_svc.check_one(bot, sponsor=sponsor, tg_id=user.tg_id)
+            )
+            if check_status != SubscriptionCheckStatus.NOT_SUBSCRIBED:
                 await session.commit()
                 return False
 
@@ -80,8 +86,13 @@ async def _recheck_one(bot: Bot, *, completion_id: int) -> bool:
             amount = round(completion.reward, 2)
             notify_allowed = NotificationService.is_enabled(user, "tasks")
 
+            # DELETE ... RETURNING — атомарная точка владения откатом:
+            # два воркера не смогут дважды списать одну completion.
+            if not await comp_repo.delete(completion.id):
+                await session.commit()
+                return False
             debt = await user_repo.subtract_with_debt(user.id, completion.reward)
-            await comp_repo.delete(completion.id)
+            await sponsor_repo.release_counter(sponsor.id)
             await ActionLogRepo(session).log(
                 user_tg_id=tg_id,
                 action="task_lost",
@@ -94,15 +105,18 @@ async def _recheck_one(bot: Bot, *, completion_id: int) -> bool:
             return False
 
     # уведомления — после успешного коммита, не блокируем транзакцию IO-вызовами
+    safe_title = html.quote(title)
     if notify_allowed:
         await _notify_user(
-            bot, tg_id, T.notify_task_lost.format(title=title, amount=stars(amount))
+            bot,
+            tg_id,
+            T.notify_task_lost.format(title=safe_title, amount=stars(amount)),
         )
     await _notify_log_channel(
         bot,
         T.log_task_lost.format(
             tg_id=tg_id,
-            title=title,
+            title=safe_title,
             amount=f"{amount:.2f}⭐",
             debt_part=f", в долг {debt:.2f}⭐" if debt > 0 else "",
         ),

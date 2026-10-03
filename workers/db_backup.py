@@ -24,6 +24,7 @@ from db.session import SessionLocal
 from locales.ru import T
 from services.settings import SettingsService
 from utils.tz import now_msk
+from utils.backup_crypto import encrypt_file
 
 
 log = get_logger(__name__)
@@ -51,11 +52,33 @@ def _copy_sqlite(src: str, dst: str) -> None:
         src_conn.close()
 
 
-async def make_backup_file(src: str) -> str:
+async def make_backup_file(src: str, *, temp_dir: str | None = None) -> str:
     """Снимает копию БД во временный файл, возвращает путь к нему."""
-    fd, dst = tempfile.mkstemp(prefix="bot_backup_", suffix=".db")
+    fd, dst = tempfile.mkstemp(prefix="bot_backup_", suffix=".db", dir=temp_dir)
     os.close(fd)
-    await asyncio.to_thread(_copy_sqlite, src, dst)
+    completed = False
+    try:
+        await asyncio.to_thread(_copy_sqlite, src, dst)
+        completed = True
+    finally:
+        if not completed:
+            _remove_quiet(dst)
+    return dst
+
+
+async def encrypt_backup_file(src: str, *, temp_dir: str | None = None) -> str:
+    """Создаёт Fernet-зашифрованную копию перед отправкой во внешний канал."""
+    fd, dst = tempfile.mkstemp(
+        prefix="bot_backup_", suffix=".db.fernet", dir=temp_dir
+    )
+    os.close(fd)
+    completed = False
+    try:
+        await asyncio.to_thread(encrypt_file, src, dst)
+        completed = True
+    finally:
+        if not completed:
+            _remove_quiet(dst)
     return dst
 
 
@@ -73,21 +96,26 @@ async def run_db_backup(bot: Bot) -> None:
         log.warning("db_backup_skipped", reason="db_file_not_found", src=src)
         return
 
-    dst = await make_backup_file(src)
+    plain = await make_backup_file(src)
+    encrypted: str | None = None
     try:
+        encrypted = await encrypt_backup_file(plain)
         stamp = now_msk().strftime("%Y-%m-%d_%H-%M")
-        size_kb = os.path.getsize(dst) // 1024
+        size_kb = os.path.getsize(encrypted) // 1024
         try:
             await bot.send_document(
                 app_settings.log_channel_id,
-                FSInputFile(dst, filename=f"bot_{stamp}.db"),
+                FSInputFile(encrypted, filename=f"bot_{stamp}.db.fernet"),
                 caption=T.log_backup_caption.format(stamp=stamp, size_kb=size_kb),
             )
             log.info("db_backup_sent", size_kb=size_kb)
         except TelegramAPIError:
             log.exception("db_backup_send_failed")
+            raise
     finally:
-        _remove_quiet(dst)
+        _remove_quiet(plain)
+        if encrypted is not None:
+            _remove_quiet(encrypted)
 
 
 def _remove_quiet(path: str) -> None:

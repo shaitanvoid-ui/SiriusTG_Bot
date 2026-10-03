@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logger import get_logger
 from db.models import User
+from db.money import from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.daily_bonus_log import DailyBonusLogRepo
 from db.repositories.user import UserRepo
@@ -33,6 +34,7 @@ _DEFAULT_STREAK = {"1": 0.5, "3": 0.7, "7": 1.0, "14": 1.5, "30": 2.0}
 
 
 class BonusStatus(StrEnum):
+    BLOCKED = "blocked"
     OK = "ok"
     ALREADY = "already"            # уже получал сегодня
     BIO_MISSING = "bio_missing"    # bio без рефки
@@ -100,7 +102,7 @@ class BonusService:
         for threshold in sorted(tiers):
             if streak >= threshold:
                 amount = tiers[threshold]
-        return round(amount, 2)
+        return float(from_units(settlement_units(amount)))
 
     async def _next_tier(self, streak: int) -> tuple[int | None, float | None]:
         tiers = await self._tiers()
@@ -108,7 +110,7 @@ class BonusService:
         if not ahead:
             return None, None
         nxt = ahead[0]
-        return nxt, round(tiers[nxt], 2)
+        return nxt, float(from_units(settlement_units(tiers[nxt])))
 
     @staticmethod
     def _prospective_streak(user: User, today: date) -> int:
@@ -137,6 +139,8 @@ class BonusService:
 
     async def claim(self, user: User, *, bio_checker: BioChecker) -> BonusResult:
         today = _today()
+        if not await self.user_repo.rewards_allowed(user.id):
+            return BonusResult(status=BonusStatus.BLOCKED, balance=round(user.balance, 2))
 
         if user.last_bonus_date == today or await self.log_repo.get(user.id, today):
             return BonusResult(
@@ -163,15 +167,29 @@ class BonusService:
                 )
             bio_ok = True
 
+        if not await self.user_repo.lock_rewards_allowed(user.id):
+            return BonusResult(status=BonusStatus.BLOCKED, balance=round(user.balance, 2))
         streak = self._prospective_streak(user, today)
         amount = await self._amount_for_streak(streak)
 
-        await self.user_repo.add_balance(user.id, amount)
+        reserved = await self.log_repo.create_if_absent(
+            user_id=user.id,
+            day=today,
+            amount=amount,
+            streak=streak,
+            bio_ok=bio_ok,
+        )
+        if not reserved:
+            await self.session.refresh(user)
+            return BonusResult(
+                status=BonusStatus.ALREADY,
+                streak=user.bonus_streak,
+                balance=round(user.balance, 2),
+            )
+
+        await self.user_repo.add_balance(user.id, amount, reason="daily_bonus")
         user.bonus_streak = streak
         user.last_bonus_date = today
-        await self.log_repo.create(
-            user_id=user.id, day=today, amount=amount, streak=streak, bio_ok=bio_ok
-        )
         await ActionLogRepo(self.session).log(
             user_tg_id=user.tg_id,
             action="bonus_claimed",

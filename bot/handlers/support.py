@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import Bot, F, Router
@@ -14,9 +16,11 @@ from bot.keyboards.support import (
     kb_faq_answer,
     kb_faq_list,
     kb_my_tickets,
+    kb_support_close_confirm,
     kb_support_cancel,
     kb_support_created,
     kb_support_home,
+    kb_support_reply_cancel,
     kb_ticket_card,
     user_status_label,
 )
@@ -28,8 +32,39 @@ from locales.ru import T
 from services.settings import SettingsService
 from services.support import CreateStatus, SupportService, render_thread
 from utils.tz import fmt_dt
+from utils.ui import html_text
 
 router = Router(name="support")
+
+
+async def _edit_fsm_card(
+    message: Message,
+    state: FSMContext,
+    text: str,
+    reply_markup,
+) -> None:
+    """Обновить исходную FSM-карточку и убрать пользовательский ввод из чата."""
+    data = await state.get_data()
+    edited = False
+    chat_id = data.get("ui_chat_id")
+    message_id = data.get("ui_message_id")
+    if chat_id and message_id:
+        try:
+            await message.bot.edit_message_text(
+                text,
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            edited = True
+        except TelegramBadRequest:
+            pass
+    if not edited:
+        sent = await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        await state.update_data(ui_chat_id=sent.chat.id, ui_message_id=sent.message_id)
+    with suppress(TelegramBadRequest):
+        await message.delete()
 
 
 # ---------- хаб ----------
@@ -45,7 +80,7 @@ async def cb_support_home(
         await callback.answer(T.support_disabled_alert, show_alert=True)
         return
     await state.clear()
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(T.support_home, reply_markup=kb_support_home())
     await callback.answer()
 
@@ -56,7 +91,7 @@ async def cb_support_cancel(
 ) -> None:
     await state.clear()
     if callback.message is not None:
-        with suppress(TelegramBadRequest):
+        with ignore_unchanged():
             await callback.message.edit_text(T.support_home, reply_markup=kb_support_home())
     await callback.answer()
 
@@ -74,9 +109,10 @@ async def cb_faq_home(callback: CallbackQuery, session: AsyncSession) -> None:
         await callback.answer()
         return
     items = await _faq_items(session)
-    with suppress(TelegramBadRequest):
+    text = T.support_faq_home if items else T.support_faq_empty
+    with ignore_unchanged():
         await callback.message.edit_text(
-            T.support_faq_home,
+            text,
             reply_markup=kb_faq_list([str(i["q"]) for i in items]),
         )
     await callback.answer()
@@ -87,15 +123,22 @@ async def cb_faq_answer(callback: CallbackQuery, session: AsyncSession) -> None:
     if callback.message is None:
         await callback.answer()
         return
-    idx = int(callback.data.rsplit(":", 1)[-1])
+    try:
+        idx = int((callback.data or "").rsplit(":", 1)[-1])
+    except ValueError:
+        await callback.answer(T.stale_screen_alert, show_alert=True)
+        return
     items = await _faq_items(session)
-    if idx >= len(items):
-        await callback.answer()
+    if idx < 0 or idx >= len(items):
+        await callback.answer(T.stale_screen_alert, show_alert=True)
         return
     item = items[idx]
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(
-            T.support_faq_answer.format(question=item["q"], answer=item["a"]),
+            T.support_faq_answer.format(
+                question=html_text(item["q"]),
+                answer=html_text(item["a"]),
+            ),
             reply_markup=kb_faq_answer(),
         )
     await callback.answer()
@@ -117,7 +160,11 @@ async def cb_new_ticket(
     min_len = await s.get_int("support.min_text_length", 10)
     max_len = await s.get_int("support.max_text_length", 1500)
     await state.set_state(SupportStates.waiting_text)
-    with suppress(TelegramBadRequest):
+    await state.update_data(
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.support_new_prompt.format(min_len=min_len, max_len=max_len),
             reply_markup=kb_support_cancel(),
@@ -137,29 +184,54 @@ async def msg_new_ticket(
     result = await svc.create_ticket(db_user, message.text or "")
 
     if result.status is CreateStatus.TOO_SHORT:
-        await message.answer(T.support_text_too_short.format(min_len=result.min_len))
+        await _edit_fsm_card(
+            message,
+            state,
+            T.support_new_prompt.format(min_len=result.min_len, max_len=result.max_len)
+            + "\n\n"
+            + T.support_text_too_short.format(min_len=result.min_len),
+            kb_support_cancel(),
+        )
         return
     if result.status is CreateStatus.TOO_LONG:
-        await message.answer(T.support_text_too_long.format(max_len=result.max_len))
+        await _edit_fsm_card(
+            message,
+            state,
+            T.support_new_prompt.format(min_len=result.min_len, max_len=result.max_len)
+            + "\n\n"
+            + T.support_text_too_long.format(max_len=result.max_len),
+            kb_support_cancel(),
+        )
         return
-    await state.clear()
     if result.status is CreateStatus.TOO_MANY:
-        await message.answer(T.support_too_many_alert, reply_markup=kb_support_home())
+        await _edit_fsm_card(
+            message, state, T.support_too_many_alert, kb_support_home()
+        )
+        await state.clear()
         return
     if result.status is CreateStatus.DISABLED or result.ticket is None:
-        await message.answer(T.support_disabled_alert, reply_markup=kb_support_home())
+        await _edit_fsm_card(
+            message, state, T.support_disabled_alert, kb_support_home()
+        )
+        await state.clear()
         return
 
     ticket = result.ticket
-    await message.answer(
-        T.support_created.format(id=ticket.id), reply_markup=kb_support_created()
+    await _edit_fsm_card(
+        message,
+        state,
+        T.support_created.format(id=ticket.id),
+        kb_support_created(),
     )
+    await state.clear()
     if app_settings.log_channel_id:
         with suppress(TelegramAPIError):
             await bot.send_message(
                 app_settings.log_channel_id,
                 T.log_support_new_ticket.format(
-                    id=ticket.id, tg_id=db_user.tg_id, subject=ticket.subject
+                    id=ticket.id,
+                    tg_id=db_user.tg_id,
+                    subject=html_text(ticket.subject),
                 ),
             )
 
@@ -175,7 +247,7 @@ async def cb_my_tickets(
         return
     tickets = await TicketRepo(session).list_for_user(db_user.id)
     text = T.support_my_list if tickets else T.support_my_empty
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb_my_tickets(tickets))
     await callback.answer()
 
@@ -200,7 +272,7 @@ async def _render_ticket_card(
         created=fmt_dt(ticket.created_at),
         thread=render_thread(messages),
     )
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await message.edit_text(text, reply_markup=kb_ticket_card(ticket))
 
 
@@ -216,11 +288,15 @@ async def cb_ticket_reply(
         await callback.answer(T.support_ticket_closed_alert, show_alert=True)
         return
     await state.set_state(SupportStates.waiting_reply)
-    await state.update_data(ticket_id=ticket.id)
-    with suppress(TelegramBadRequest):
+    await state.update_data(
+        ticket_id=ticket.id,
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
         await callback.message.edit_text(
             T.support_reply_prompt.format(id=ticket.id),
-            reply_markup=kb_support_cancel(),
+            reply_markup=kb_support_reply_cancel(ticket.id),
         )
     await callback.answer()
 
@@ -233,11 +309,46 @@ async def cb_ticket_close(
     if ticket is None or callback.message is None:
         await callback.answer()
         return
+    if ticket.status == TicketStatus.CLOSED.value:
+        await callback.answer(T.support_ticket_closed_alert, show_alert=True)
+        return
+    with ignore_unchanged():
+        await callback.message.edit_text(
+            T.support_close_confirm.format(id=ticket.id),
+            reply_markup=kb_support_close_confirm(ticket.id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sup:t:close_yes:"))
+async def cb_ticket_close_confirmed(
+    callback: CallbackQuery, session: AsyncSession, db_user: User
+) -> None:
+    ticket = await _own_ticket(callback, session, db_user)
+    if ticket is None or callback.message is None:
+        await callback.answer(T.stale_screen_alert, show_alert=True)
+        return
     closed = await SupportService(session).close(ticket, by="user")
     await _render_ticket_card(callback.message, session, ticket)
     await callback.answer(
         T.support_closed_alert if closed else T.support_ticket_closed_alert
     )
+
+
+@router.callback_query(F.data.startswith("sup:t:reply_cancel:"))
+async def cb_ticket_reply_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    db_user: User,
+) -> None:
+    ticket = await _own_ticket(callback, session, db_user)
+    await state.clear()
+    if ticket is None or callback.message is None:
+        await callback.answer(T.stale_screen_alert, show_alert=True)
+        return
+    await _render_ticket_card(callback.message, session, ticket)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("sup:t:"))
@@ -262,28 +373,66 @@ async def msg_ticket_reply(
 ) -> None:
     data = await state.get_data()
     ticket = await TicketRepo(session).get_by_id(int(data.get("ticket_id", 0)))
-    await state.clear()
     if ticket is None or ticket.user_id != db_user.id:
-        await message.answer(T.support_my_empty, reply_markup=kb_support_home())
+        await _edit_fsm_card(message, state, T.support_my_empty, kb_support_home())
+        await state.clear()
         return
-    added = await SupportService(session).user_reply(db_user, ticket, message.text or "")
+    text = (message.text or "").strip()
+    max_len = await SettingsService(session).get_int("support.max_text_length", 1500)
+    if not text:
+        await _edit_fsm_card(
+            message,
+            state,
+            T.support_reply_prompt.format(id=ticket.id)
+            + "\n\n"
+            + T.support_reply_empty,
+            kb_support_reply_cancel(ticket.id),
+        )
+        return
+    if len(text) > max_len:
+        await _edit_fsm_card(
+            message,
+            state,
+            T.support_reply_prompt.format(id=ticket.id)
+            + "\n\n"
+            + T.support_reply_too_long.format(max_len=max_len),
+            kb_support_reply_cancel(ticket.id),
+        )
+        return
+    added = await SupportService(session).user_reply(db_user, ticket, text)
     if added is None:
-        await message.answer(T.support_ticket_closed_alert, reply_markup=kb_support_home())
+        await _edit_fsm_card(
+            message, state, T.support_ticket_closed_alert, kb_support_home()
+        )
+        await state.clear()
         return
 
     messages = await TicketRepo(session).list_messages(ticket.id, limit=8)
-    await message.answer(
+    await _edit_fsm_card(
+        message,
+        state,
         T.support_ticket_card.format(
             id=ticket.id,
             status=user_status_label(ticket.status),
             created=fmt_dt(ticket.created_at),
             thread=render_thread(messages),
         ),
-        reply_markup=kb_ticket_card(ticket),
+        kb_ticket_card(ticket),
     )
+    await state.clear()
     if app_settings.log_channel_id:
         with suppress(TelegramAPIError):
             await bot.send_message(
                 app_settings.log_channel_id,
                 T.log_support_user_reply.format(tg_id=db_user.tg_id, id=ticket.id),
             )
+
+
+@router.message(SupportStates.waiting_text)
+async def msg_new_ticket_non_text(message: Message) -> None:
+    await message.answer(T.text_input_required)
+
+
+@router.message(SupportStates.waiting_reply)
+async def msg_ticket_reply_non_text(message: Message) -> None:
+    await message.answer(T.text_input_required)

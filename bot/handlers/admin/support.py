@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import Bot, F, Router, html
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +19,10 @@ from bot.filters.admin import IsAdmin
 from bot.handlers.admin._common import user_label
 from bot.keyboards.support import (
     admin_status_label,
+    kb_admin_sup_close_confirm,
     kb_admin_sup_card,
     kb_admin_sup_list,
+    kb_admin_sup_reply_cancel,
     kb_open_ticket_dm,
 )
 from bot.states.admin import SupportAdminStates
@@ -27,11 +31,39 @@ from db.repositories.support import TicketRepo
 from db.repositories.user import UserRepo
 from locales.ru import T
 from services.support import SupportService, render_thread
+from services.settings import SettingsService
 from utils.tz import fmt_dt
 
 router = Router(name="admin_support")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
+
+
+async def _edit_fsm_card(
+    message: Message,
+    state: FSMContext,
+    text: str,
+    reply_markup,
+) -> None:
+    data = await state.get_data()
+    edited = False
+    if data.get("ui_chat_id") and data.get("ui_message_id"):
+        try:
+            await message.bot.edit_message_text(
+                text,
+                chat_id=int(data["ui_chat_id"]),
+                message_id=int(data["ui_message_id"]),
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            edited = True
+        except TelegramAPIError:
+            pass
+    if not edited:
+        sent = await message.answer(text, reply_markup=reply_markup)
+        await state.update_data(ui_chat_id=sent.chat.id, ui_message_id=sent.message_id)
+    with suppress(TelegramAPIError):
+        await message.delete()
 
 
 async def _labels_for(
@@ -56,7 +88,7 @@ async def _render_root(message: Message, session: AsyncSession) -> None:
         closed=counts[TicketStatus.CLOSED.value],
         hint=T.admin_sup_root_hint if tickets else T.admin_sup_root_empty,
     )
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await message.edit_text(
             text,
             reply_markup=kb_admin_sup_list(tickets, await _labels_for(session, tickets)),
@@ -84,7 +116,7 @@ async def cb_archive(callback: CallbackQuery, session: AsyncSession) -> None:
     text = T.admin_sup_archive_caption.format(
         hint=T.admin_sup_root_hint if tickets else T.admin_sup_archive_empty
     )
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await callback.message.edit_text(
             text,
             reply_markup=kb_admin_sup_list(
@@ -115,7 +147,7 @@ async def _render_card(
     message: Message, session: AsyncSession, ticket: SupportTicket
 ) -> None:
     text, kb = await _card_view(session, ticket)
-    with suppress(TelegramBadRequest):
+    with ignore_unchanged():
         await message.edit_text(text, reply_markup=kb)
 
 
@@ -150,9 +182,16 @@ async def cb_reply_prompt(
         await callback.answer(T.admin_sup_already_closed_alert, show_alert=True)
         return
     await state.set_state(SupportAdminStates.waiting_reply)
-    await state.update_data(ticket_id=ticket.id)
-    with suppress(TelegramBadRequest):
-        await callback.message.edit_text(T.admin_sup_reply_prompt.format(id=ticket.id))
+    await state.update_data(
+        ticket_id=ticket.id,
+        ui_chat_id=callback.message.chat.id,
+        ui_message_id=callback.message.message_id,
+    )
+    with ignore_unchanged():
+        await callback.message.edit_text(
+            T.admin_sup_reply_prompt.format(id=ticket.id),
+            reply_markup=kb_admin_sup_reply_cancel(ticket.id),
+        )
     await callback.answer()
 
 
@@ -161,16 +200,38 @@ async def msg_reply(
     message: Message, state: FSMContext, session: AsyncSession, bot: Bot
 ) -> None:
     data = await state.get_data()
-    await state.clear()
     repo = TicketRepo(session)
     ticket = await repo.get_by_id(int(data.get("ticket_id", 0)))
     if ticket is None:
-        await message.answer(T.admin_sup_not_found_alert)
+        await _edit_fsm_card(message, state, T.admin_sup_not_found_alert, None)
+        await state.clear()
         return
     text = (message.text or "").strip()
+    max_len = await SettingsService(session).get_int("support.max_text_length", 1500)
+    if not text:
+        await _edit_fsm_card(
+            message,
+            state,
+            T.admin_sup_reply_prompt.format(id=ticket.id)
+            + "\n\n"
+            + T.admin_sup_reply_empty,
+            kb_admin_sup_reply_cancel(ticket.id),
+        )
+        return
+    if len(text) > max_len:
+        await _edit_fsm_card(
+            message,
+            state,
+            T.admin_sup_reply_prompt.format(id=ticket.id)
+            + "\n\n"
+            + T.admin_sup_reply_too_long.format(max_len=max_len),
+            kb_admin_sup_reply_cancel(ticket.id),
+        )
+        return
     added = await SupportService(session).admin_reply(ticket, text)
     if added is None:
-        await message.answer(T.admin_sup_already_closed_alert)
+        await _edit_fsm_card(message, state, T.admin_sup_already_closed_alert, None)
+        await state.clear()
         return
 
     # DM юзеру — ответы поддержки не гасятся преференциями
@@ -182,15 +243,39 @@ async def msg_reply(
                 T.notify_support_reply.format(id=ticket.id, text=html.quote(text[:500])),
                 reply_markup=kb_open_ticket_dm(ticket.id),
             )
-    await message.answer(T.admin_sup_reply_sent)
-    text, kb = await _card_view(session, ticket)
-    await message.answer(text, reply_markup=kb)
+    card_text, kb = await _card_view(session, ticket)
+    await _edit_fsm_card(
+        message,
+        state,
+        T.admin_sup_reply_sent + "\n\n" + card_text,
+        kb,
+    )
+    await state.clear()
 
 
 # ---------- закрытие ----------
 
 @router.callback_query(F.data.startswith("adm:sup:close:"))
 async def cb_close(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> None:
+    ticket = await _ticket_from_cb(callback, session)
+    if ticket is None or callback.message is None:
+        await callback.answer(T.admin_sup_not_found_alert, show_alert=True)
+        return
+    if ticket.status == TicketStatus.CLOSED.value:
+        await callback.answer(T.admin_sup_already_closed_alert, show_alert=True)
+        return
+    with ignore_unchanged():
+        await callback.message.edit_text(
+            T.admin_sup_close_confirm.format(id=ticket.id),
+            reply_markup=kb_admin_sup_close_confirm(ticket.id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm:sup:close_yes:"))
+async def cb_close_confirmed(
+    callback: CallbackQuery, session: AsyncSession, bot: Bot
+) -> None:
     ticket = await _ticket_from_cb(callback, session)
     if ticket is None or callback.message is None:
         await callback.answer(T.admin_sup_not_found_alert, show_alert=True)
@@ -205,3 +290,29 @@ async def cb_close(callback: CallbackQuery, session: AsyncSession, bot: Bot) -> 
             await bot.send_message(user.tg_id, T.notify_support_closed.format(id=ticket.id))
     await _render_card(callback.message, session, ticket)
     await callback.answer(T.admin_sup_closed_alert)
+
+
+@router.callback_query(F.data.startswith("adm:sup:reply_cancel:"))
+async def cb_reply_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    ticket = await _ticket_from_cb(callback, session)
+    await state.clear()
+    if ticket is None or callback.message is None:
+        await callback.answer(T.admin_sup_not_found_alert, show_alert=True)
+        return
+    await _render_card(callback.message, session, ticket)
+    await callback.answer()
+
+
+@router.message(SupportAdminStates.waiting_reply)
+async def msg_reply_non_text(message: Message) -> None:
+    await message.answer(T.text_input_required)
+
+
+@router.callback_query(F.data.startswith("adm:"))
+async def cb_admin_stale(callback: CallbackQuery) -> None:
+    """Last admin router fallback for buttons whose FSM screen has expired."""
+    await callback.answer(T.stale_screen_alert, show_alert=True)

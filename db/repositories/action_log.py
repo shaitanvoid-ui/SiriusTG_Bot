@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
@@ -8,6 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ActionLog
 from db.repositories.base import BaseRepo
+
+
+def _json_decimal(value):
+    # Compatibility display log: exact financial audit lives in MoneyOperation.
+    if isinstance(value, Decimal):
+        return str(value)
+    raise TypeError(f"Unsupported log payload type {type(value).__name__}")
 
 
 class ActionLogRepo(BaseRepo):
@@ -25,7 +33,7 @@ class ActionLogRepo(BaseRepo):
             ActionLog(
                 user_tg_id=user_tg_id,
                 action=action,
-                payload=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
+                payload=json.dumps(payload, ensure_ascii=False, default=_json_decimal) if payload is not None else None,
             )
         )
 

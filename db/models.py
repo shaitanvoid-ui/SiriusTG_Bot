@@ -21,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base, TimestampMixin, utcnow
+from db.money import money_property
 
 
 # ---------- enums ----------
@@ -96,8 +97,12 @@ class User(TimestampMixin, Base):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # economy (заполнится в следующих этапах)
-    balance: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    debt: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    balance_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    balance = money_property("balance_units")
+    debt_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    debt = money_property("debt_units")
+    reserved_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reserved = money_property("reserved_units")
     ref_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     confirmed_ref_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     level: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -106,13 +111,19 @@ class User(TimestampMixin, Base):
     # ежедневный бонус + streak (Этап 5)
     bonus_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_bonus_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_daily_reminder_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # партнёрская атрибуция (Этап 10): кто привёл юзера по UTM-ссылке
-    partner_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    partner_link_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    partner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    partner_link_id: Mapped[int | None] = mapped_column(
+        ForeignKey("partner_links.id", ondelete="SET NULL"), nullable=True
+    )
+    partner_rewarded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # преференции уведомлений (Этап 11): JSON {"refs": bool, "tasks": bool, "rewards": bool}.
-    # NULL = всё включено (дефолт).
+    # NULL = старые категории включены; новые ежедневные напоминания выключены.
     notify_prefs: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -120,6 +131,37 @@ class User(TimestampMixin, Base):
     subscriptions: Mapped[list["UserSubscription"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+
+
+class MoneyOperation(Base):
+    """Append-only integer journal; inserted with each balance transaction."""
+    __tablename__ = "money_operations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True)
+    partner_id: Mapped[int | None] = mapped_column(ForeignKey("partners.id", ondelete="RESTRICT"), nullable=True, index=True)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    reference: Mapped[str | None] = mapped_column(String(192), nullable=True, unique=True)
+    balance_delta_units: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    debt_delta_units: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_delta_units: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    balance_after_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    debt_after_units: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reserved_after_units: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
+class MoneyMigrationAudit(Base):
+    """The exact original decimal text and explained rounding of each field."""
+    __tablename__ = "money_migration_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    table_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    column_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_value: Mapped[str] = mapped_column(Text, nullable=False)
+    rounded_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rounding_delta: Mapped[str] = mapped_column(Text, nullable=False)
+    __table_args__ = (UniqueConstraint("table_name", "row_id", "column_name", name="uq_money_migration_field"),)
 
 
 class Sponsor(TimestampMixin, Base):
@@ -139,11 +181,14 @@ class Sponsor(TimestampMixin, Base):
     subs_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     subs_counter: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    reward: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    reward_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reward = money_property("reward_units")
     is_honeypot: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # партнёрский спонсор (Этап 10): чей канал, тому идёт доля с заданий
-    partner_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    partner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     __table_args__ = (
         Index("ix_sponsors_required_active", "is_required", "is_active"),
@@ -206,8 +251,10 @@ class Referral(TimestampMixin, Base):
     is_rewarded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_matured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    reward_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    debt_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    reward_amount_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reward_amount = money_property("reward_amount_units")
+    debt_amount_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    debt_amount = money_property("debt_amount_units")
 
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     matured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -227,7 +274,8 @@ class Promo(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
-    reward: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    reward_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reward = money_property("reward_units")
     max_activations: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     used_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -246,7 +294,8 @@ class PromoActivation(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    reward: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    reward_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reward = money_property("reward_units")
     is_honeypot_hit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
@@ -267,7 +316,8 @@ class UserTaskCompletion(Base):
     sponsor_id: Mapped[int] = mapped_column(
         ForeignKey("sponsors.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    reward: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    reward_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reward = money_property("reward_units")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -288,7 +338,8 @@ class ClickerDay(Base):
     )
     day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     clicks: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    earned: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    earned_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    earned = money_property("earned_units")
     # последний клик в миллисекундах с эпохи (UTC). Для rate-limit.
     last_click_ms: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     # кликов с момента последней мини-капчи. Для триггера новой.
@@ -325,7 +376,8 @@ class DailyBonusLog(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    amount_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    amount = money_property("amount_units")
     streak: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     bio_ok: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -359,15 +411,26 @@ class WheelSpin(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    prize: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    cost: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    prize_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    prize = money_property("prize_units")
+    cost_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    cost = money_property("cost_units")
     is_free: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Номер бесплатной попытки в пределах суток. Для платных вращений NULL.
+    # Уникальность слота делает дневной лимит устойчивым к одновременным
+    # callback'ам из нескольких апдейтов/процессов.
+    free_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
     __table_args__ = (
         Index("ix_wheel_spins_user_day", "user_id", "day"),
+        Index("uq_wheel_paid_request", "user_id", "request_token", unique=True),
+        UniqueConstraint(
+            "user_id", "day", "free_slot", name="uq_wheel_free_slot"
+        ),
     )
 
 
@@ -381,7 +444,8 @@ class UserAchievement(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     code: Mapped[str] = mapped_column(String(64), nullable=False)
-    reward: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    reward_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reward = money_property("reward_units")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -402,7 +466,8 @@ class LeaderboardPayout(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     rank: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    amount_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    amount = money_property("amount_units")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -482,10 +547,14 @@ class SupportTicket(Base):
     __tablename__ = "support_tickets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     subject: Mapped[str] = mapped_column(String(255), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
-    review_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    review_id: Mapped[int | None] = mapped_column(
+        ForeignKey("reviews.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=TicketStatus.NEW.value, index=True
     )
@@ -548,11 +617,16 @@ class Partner(TimestampMixin, Base):
     )
 
     # персональные ставки; NULL = брать дефолт из settings (partner.*)
-    reward_per_user: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reward_per_user_units: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reward_per_user = money_property("reward_per_user_units", nullable=True)
     percent_sponsor: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    balance: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    total_earned: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    balance_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    balance = money_property("balance_units")
+    total_earned_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    total_earned = money_property("total_earned_units")
+    reserved_units: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    reserved = money_property("reserved_units")
 
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -585,11 +659,15 @@ class PartnerPayout(TimestampMixin, Base):
     partner_id: Mapped[int] = mapped_column(
         ForeignKey("partners.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    amount_stars: Mapped[float] = mapped_column(Float, nullable=False)
-    rate_rub: Mapped[float] = mapped_column(Float, nullable=False)
-    amount_rub: Mapped[float] = mapped_column(Float, nullable=False)
+    amount_stars_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    amount_stars = money_property("amount_stars_units")
+    rate_rub_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rate_rub = money_property("rate_rub_units")
+    amount_rub_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    amount_rub = money_property("amount_rub_units")
     method: Mapped[str] = mapped_column(String(16), nullable=False)
-    requisites: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Fernet-токен длиннее исходных 255 символов, поэтому используем Text.
+    requisites: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=PayoutStatus.PENDING.value, index=True
     )
@@ -600,6 +678,7 @@ class PartnerPayout(TimestampMixin, Base):
 __all__ = [
     "Base",
     "User",
+    "MoneyOperation",
     "Sponsor",
     "UserSubscription",
     "Setting",
@@ -630,3 +709,6 @@ __all__ = [
     "ReferralSource",
     "ReviewStatus",
 ]
+
+
+import db.gift_models  # noqa: F401 -- register durable gift tables

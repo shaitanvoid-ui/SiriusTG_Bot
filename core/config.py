@@ -4,7 +4,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, computed_field
+from cryptography.fernet import Fernet
+from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,16 +30,38 @@ class Settings(BaseSettings):
     log_channel_id: int | None = None
 
     database_url: str = "sqlite+aiosqlite:///./data/bot.db"
+    fsm_storage_path: str = "./data/fsm.db"
 
     fernet_key: str | None = None
 
     tg_api_id: int | None = None
     tg_api_hash: str | None = None
     userbot_phone: str | None = None
+    userbot_account_id: int | None = Field(default=None, ge=1)
     backup_userbot_phone: str | None = None
 
     health_host: str = "0.0.0.0"
     health_port: int = 8080
+
+    rich_messages: bool = True
+    polling_concurrency: int = Field(default=32, ge=1, le=256)
+
+    @model_validator(mode="after")
+    def validate_production_fernet_key(self) -> "Settings":
+        """Fail before startup if production encryption cannot be trusted."""
+        if self.env != "production":
+            return self
+
+        key = self.fernet_key or ""
+        if not key.strip():
+            raise ValueError("FERNET_KEY is required in production")
+        if key != key.strip():
+            raise ValueError("FERNET_KEY must not contain surrounding whitespace")
+        try:
+            Fernet(key.encode("ascii"))
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ValueError("FERNET_KEY must be a valid Fernet key") from exc
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

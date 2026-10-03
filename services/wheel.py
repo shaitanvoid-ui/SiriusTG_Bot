@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logger import get_logger
 from db.models import User
+from db.money import from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.user import UserRepo
 from db.repositories.wheel_spin import WheelSpinRepo
@@ -38,10 +39,12 @@ _DEFAULT_PRIZES: list[dict] = [
 
 
 class SpinStatus(StrEnum):
+    BLOCKED = "blocked"
     OK = "ok"
     NO_FREE = "no_free"          # бесплатное на сегодня уже потрачено
     NOT_ENOUGH = "not_enough"    # не хватает баланса на платное
     DISABLED = "disabled"
+    ALREADY = "already"
 
 
 @dataclass(frozen=True)
@@ -101,7 +104,7 @@ class WheelService:
         return prizes[-1][0]
 
     async def get_view(self, user: User) -> WheelView:
-        cost = await self.settings.get_float("wheel.cost", 1.0)
+        cost = float(from_units(settlement_units(await self.settings.get_float("wheel.cost", 1.0))))
         free_per_day = await self.settings.get_int("wheel.free_per_day", 1)
         used = await self.repo.count_free_today(user.id, _today())
         prizes = await self._prizes()
@@ -112,48 +115,65 @@ class WheelService:
             free_available=used < free_per_day,
             cost=round(cost, 2),
             balance=round(user.balance, 2),
-            can_pay=user.balance >= cost,
+            can_pay=user.debt_units == 0 and user.balance_units >= settlement_units(cost),
             sectors=sectors,
         )
 
-    async def spin(self, user: User, *, paid: bool) -> WheelResult:
+    async def spin(self, user: User, *, paid: bool, request_token: str | None = None) -> WheelResult:
+        if not await self.user_repo.lock_rewards_allowed(user.id):
+            return WheelResult(status=SpinStatus.BLOCKED, balance=round(user.balance, 2))
         if not await self.settings.get_bool("wheel.enabled", True):
             return WheelResult(status=SpinStatus.DISABLED, balance=round(user.balance, 2))
 
-        cost = await self.settings.get_float("wheel.cost", 1.0)
+        cost = float(from_units(settlement_units(await self.settings.get_float("wheel.cost", 1.0))))
         free_per_day = await self.settings.get_int("wheel.free_per_day", 1)
         today = _today()
 
+        prizes = await self._prizes()
+        prize = float(from_units(settlement_units(self._roll(prizes))))
         spent = 0.0
         if paid:
-            if user.balance < cost:
+            reserved = None
+            if request_token is not None:
+                reserved = await self.repo.reserve_paid(user_id=user.id, day=today,
+                                                       prize=prize, cost=round(cost, 2), request_token=request_token)
+                if reserved is None:
+                    return WheelResult(status=SpinStatus.ALREADY, balance=round(user.balance, 2))
+            if not await self.user_repo.try_spend_balance(user.id, cost, reason="wheel_cost"):
+                if reserved is not None:
+                    await self.repo.release_unfunded_reservation(reserved.id)
+                fresh = await self.user_repo.get_by_id(user.id)
+                balance = round(fresh.balance, 2) if fresh else round(user.balance, 2)
                 return WheelResult(
                     status=SpinStatus.NOT_ENOUGH,
-                    balance=round(user.balance, 2),
+                    balance=balance,
                     free_available=await self._free_left(user, today, free_per_day),
                     can_pay=False,
                 )
-            await self.user_repo.subtract_with_debt(user.id, cost)
             spent = round(cost, 2)
             was_free = False
+            if reserved is None:
+                await self.repo.create(user_id=user.id, day=today, prize=prize, cost=spent, is_free=False)
         else:
-            used = await self.repo.count_free_today(user.id, today)
-            if used >= free_per_day:
+            reserved = await self.repo.reserve_free(
+                user_id=user.id,
+                day=today,
+                prize=prize,
+                limit=free_per_day,
+            )
+            if reserved is None:
+                fresh = await self.user_repo.get_by_id(user.id)
+                balance = round(fresh.balance, 2) if fresh else round(user.balance, 2)
                 return WheelResult(
                     status=SpinStatus.NO_FREE,
-                    balance=round(user.balance, 2),
+                    balance=balance,
                     free_available=False,
-                    can_pay=user.balance >= cost,
+                    can_pay=user.debt_units == 0 and user.balance_units >= settlement_units(cost),
                 )
             was_free = True
 
-        prize = round(self._roll(await self._prizes()), 2)
         if prize > 0:
-            await self.user_repo.add_balance(user.id, prize)
-
-        await self.repo.create(
-            user_id=user.id, day=today, prize=prize, cost=spent, is_free=was_free
-        )
+            await self.user_repo.add_balance(user.id, prize, reason="wheel_prize")
         await ActionLogRepo(self.session).log(
             user_tg_id=user.tg_id,
             action="wheel_spin",
@@ -170,7 +190,7 @@ class WheelService:
             balance=balance,
             was_free=was_free,
             free_available=free_available,
-            can_pay=balance >= cost,
+            can_pay=user.debt_units == 0 and user.balance_units >= settlement_units(cost),
         )
 
     async def _free_left(self, user: User, today: date, free_per_day: int) -> bool:

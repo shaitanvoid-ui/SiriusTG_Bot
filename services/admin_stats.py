@@ -57,7 +57,7 @@ class AdminStatsService:
         user_repo = UserRepo(self.session)
         counts = await user_repo.counts_summary()
         balances = await user_repo.balance_summary()
-        new_today = await user_repo.joined_recently(1)
+        new_today = await user_repo.joined_since(_today_start())
 
         today = _today()
         start = _today_start()

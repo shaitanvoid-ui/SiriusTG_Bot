@@ -1,12 +1,14 @@
 """Репозиторий отзывов."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-from sqlalchemy import select, update, func, and_
+from sqlalchemy import and_, func, literal, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Review, ReviewStatus
+from db.base import utcnow
 from db.repositories.base import BaseRepo
 
 
@@ -29,6 +31,37 @@ class ReviewRepo(BaseRepo):
         await self.session.flush()
         return review
 
+    async def create_if_no_recent(
+        self,
+        *,
+        user_id: int,
+        rating: int,
+        text: str,
+        is_anonymous: bool,
+        cooldown_days: int,
+    ) -> Review | None:
+        """Создаёт отзыв, атомарно соблюдая cooldown пользователя."""
+        cutoff = utcnow() - timedelta(days=max(0, cooldown_days))
+        recent_exists = select(Review.id).where(
+            Review.user_id == user_id,
+            Review.created_at >= cutoff,
+        ).exists()
+        stmt = (
+            sqlite_insert(Review)
+            .from_select(
+                ["user_id", "rating", "text", "is_anonymous"],
+                select(
+                    literal(user_id),
+                    literal(rating),
+                    literal(text),
+                    literal(is_anonymous),
+                ).where(~recent_exists),
+            )
+            .returning(Review.id)
+        )
+        review_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        return await self.session.get(Review, review_id) if review_id else None
+
     async def get_pending(self, limit: int = 50) -> list[Review]:
         result = await self.session.execute(
             select(Review)
@@ -40,36 +73,69 @@ class ReviewRepo(BaseRepo):
 
     async def get_by_user(self, user_id: int) -> Review | None:
         result = await self.session.execute(
-            select(Review).where(Review.user_id == user_id).order_by(Review.created_at.desc())
+            select(Review)
+            .where(Review.user_id == user_id)
+            .order_by(Review.created_at.desc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def approve(self, id: int) -> Review | None:
-        review = await self.session.get(Review, id)
-        if not review or review.status != ReviewStatus.PENDING.value:
+        result = await self.session.execute(
+            update(Review)
+            .where(
+                Review.id == id,
+                Review.status == ReviewStatus.PENDING.value,
+            )
+            .values(status=ReviewStatus.APPROVED.value)
+            .returning(Review.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        if result.scalar_one_or_none() is None:
             return None
-        review.status = ReviewStatus.APPROVED.value
-        review.published_at = datetime.utcnow()
-        await self.session.flush()
-        return review
+        return await self.session.get(Review, id)
 
     async def reject(self, id: int, note: str | None = None) -> Review | None:
-        review = await self.session.get(Review, id)
-        if not review or review.status != ReviewStatus.PENDING.value:
+        result = await self.session.execute(
+            update(Review)
+            .where(
+                Review.id == id,
+                Review.status == ReviewStatus.PENDING.value,
+            )
+            .values(status=ReviewStatus.REJECTED.value, moderation_note=note)
+            .returning(Review.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        if result.scalar_one_or_none() is None:
             return None
-        review.status = ReviewStatus.REJECTED.value
-        review.moderation_note = note
-        await self.session.flush()
-        return review
+        return await self.session.get(Review, id)
 
     async def convert_to_ticket(self, id: int, note: str) -> Review | None:
-        review = await self.session.get(Review, id)
-        if not review:
+        result = await self.session.execute(
+            update(Review)
+            .where(
+                Review.id == id,
+                Review.status == ReviewStatus.PENDING.value,
+            )
+            .values(status=ReviewStatus.CONVERTED.value, moderation_note=note)
+            .returning(Review.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        if result.scalar_one_or_none() is None:
             return None
-        review.status = ReviewStatus.CONVERTED.value
-        review.moderation_note = note
-        await self.session.flush()
-        return review
+        return await self.session.get(Review, id)
+
+    async def mark_published(self, id: int) -> None:
+        await self.session.execute(
+            update(Review)
+            .where(
+                Review.id == id,
+                Review.status == ReviewStatus.APPROVED.value,
+                Review.published_at.is_(None),
+            )
+            .values(published_at=utcnow())
+            .execution_options(synchronize_session="fetch")
+        )
 
     async def count_pending(self) -> int:
         result = await self.session.execute(
@@ -89,7 +155,7 @@ class ReviewRepo(BaseRepo):
         return dict(result.all())
 
     async def has_recent_review(self, user_id: int, days: int = 7) -> bool:
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = utcnow() - timedelta(days=days)
         result = await self.session.execute(
             select(func.count())
             .select_from(Review)

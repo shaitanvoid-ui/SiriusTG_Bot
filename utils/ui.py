@@ -1,7 +1,14 @@
-"""Премиум-форматтеры и шаблоны для inline-UI."""
+"""Единая дизайн-система текстового Telegram UI SIRIUS Elite.
+
+Здесь живут только безопасные, переиспользуемые примитивы: оформление,
+форматирование значений и небольшие inline-клавиатуры. Бизнес-логики в этом
+модуле нет — благодаря этому один и тот же визуальный язык можно использовать
+и в пользовательской части, и в админ-панели.
+"""
 
 from __future__ import annotations
 
+from html import escape
 from typing import Iterable
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,19 +18,24 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # ---------- константы оформления ----------
 
 DIVIDER: str = "━━━━━━━━━━━━━━━━━━━"
+DIVIDER_COMPACT: str = "━━━━━━━━━━━━━━━"
 DIVIDER_THIN: str = "─────────────────"
 SOFT_DIVIDER: str = "·  ·  ·"
 BULLET: str = "▸"
 DOT: str = "•"
 
 # универсальные ярлыки кнопок
-BTN_BACK: str = "◀ Назад"
-BTN_BACK_MENU: str = "◀ В меню"
+BTN_BACK: str = "‹ Назад"
+BTN_BACK_MENU: str = "‹ Главное меню"
 BTN_CLOSE: str = "✕ Закрыть"
 BTN_ADD: str = "➕ Добавить"
 BTN_CANCEL: str = "✕ Отменить"
-BTN_RETRY: str = "🔄 Ещё раз"
-BTN_CONFIRM: str = "✅ Подтвердить"
+BTN_RETRY: str = "↻ Ещё раз"
+BTN_CONFIRM: str = "✓ Подтвердить"
+
+# Telegram ограничивает подпись inline-кнопки; более короткие подписи ещё и
+# заметно лучше читаются на небольших экранах.
+BUTTON_TEXT_LIMIT: int = 48
 
 
 # ---------- форматирование текста ----------
@@ -50,6 +62,46 @@ def step(current: int, total: int) -> str:
 def stars(amount: float) -> str:
     """'15.00⭐' — единый стиль форматирования звёзд."""
     return f"{amount:.2f}⭐"
+
+
+def html_text(value: object) -> str:
+    """Экранировать динамический текст для глобального HTML parse mode."""
+    return escape(str(value), quote=True)
+
+
+def clip(text: str, limit: int, *, suffix: str = "…") -> str:
+    """Аккуратно сократить динамическую подпись без выхода за ``limit``."""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if len(suffix) >= limit:
+        return suffix[:limit]
+    return text[: limit - len(suffix)].rstrip() + suffix
+
+
+def button_text(text: str, *, limit: int = BUTTON_TEXT_LIMIT) -> str:
+    """Безопасная компактная подпись для inline-кнопки."""
+    return clip(" ".join(text.split()), limit)
+
+
+def plural_ru(number: int, one: str, few: str, many: str) -> str:
+    """Русская форма существительного: ``1 день``, ``2 дня``, ``5 дней``."""
+    value = abs(int(number))
+    last_two = value % 100
+    if 11 <= last_two <= 14:
+        return many
+    last = value % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def count_ru(number: int, one: str, few: str, many: str) -> str:
+    """Число с корректным русским склонением."""
+    return f"{number} {plural_ru(number, one, few, many)}"
 
 
 def section_label(text: str) -> str:

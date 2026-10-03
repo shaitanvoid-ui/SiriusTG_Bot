@@ -16,6 +16,7 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Promo, User
+from db.money import from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.promo import PromoRepo
 from db.repositories.promo_activation import PromoActivationRepo
@@ -24,6 +25,7 @@ from services.settings import SettingsService
 
 
 class PromoStatus(StrEnum):
+    BLOCKED = "blocked"
     OK = "ok"
     HONEYPOT_BANNED = "honeypot_banned"
     NOT_FOUND = "not_found"
@@ -56,6 +58,8 @@ class PromoService:
         return await self.settings.get_int("promo.max_code_length", 32)
 
     async def redeem(self, *, user: User, raw_code: str) -> RedeemResult:
+        if not await UserRepo(self.session).lock_rewards_allowed(user.id):
+            return RedeemResult(status=PromoStatus.BLOCKED, balance=round(user.balance, 2))
         code = normalize_code(raw_code)
         if not code:
             return RedeemResult(status=PromoStatus.EMPTY)
@@ -71,16 +75,47 @@ class PromoService:
         activation_repo = PromoActivationRepo(self.session)
         existing = await activation_repo.get(promo.id, user.id)
 
-        # honeypot — фиксируем активацию, баним юзера, никакой награды.
+        if not promo.is_active:
+            return RedeemResult(status=PromoStatus.INACTIVE, code=promo.code)
+        if existing is not None:
+            return RedeemResult(status=PromoStatus.ALREADY_USED, code=promo.code)
+        if _expired(promo):
+            return RedeemResult(status=PromoStatus.EXPIRED, code=promo.code)
+        if promo.max_activations > 0 and promo.used_count >= promo.max_activations:
+            await promo_repo.set_active(promo.id, False)
+            return RedeemResult(status=PromoStatus.EXHAUSTED, code=promo.code)
+
+        # Слот и активация резервируются атомарно. Это закрывает двойное
+        # начисление при быстрых callback'ах и превышение общего лимита.
+        if not await promo_repo.try_reserve_use(promo.id):
+            if await activation_repo.get(promo.id, user.id) is not None:
+                return RedeemResult(status=PromoStatus.ALREADY_USED, code=promo.code)
+            # Статус мог измениться между предварительной проверкой и
+            # атомарным UPDATE: возвращаем точную причину, а не всегда exhausted.
+            await self.session.refresh(promo)
+            if _expired(promo):
+                return RedeemResult(status=PromoStatus.EXPIRED, code=promo.code)
+            if not promo.is_active and not (
+                promo.max_activations > 0
+                and promo.used_count >= promo.max_activations
+            ):
+                return RedeemResult(status=PromoStatus.INACTIVE, code=promo.code)
+            return RedeemResult(status=PromoStatus.EXHAUSTED, code=promo.code)
+
+        reward = from_units(settlement_units(promo.reward))
+        created = await activation_repo.create_if_absent(
+            promo_id=promo.id,
+            user_id=user.id,
+            reward=0.0 if promo.is_honeypot else reward,
+            is_honeypot_hit=promo.is_honeypot,
+        )
+        if not created:
+            await promo_repo.release_use(promo.id)
+            return RedeemResult(status=PromoStatus.ALREADY_USED, code=promo.code)
+
+        # Honeypot учитывает те же active/expiry/limit правила. Полноценный
+        # антифрод этапа 12 здесь не реализуется — сохраняется текущая механика.
         if promo.is_honeypot:
-            if existing is None:
-                await activation_repo.create(
-                    promo_id=promo.id,
-                    user_id=user.id,
-                    reward=0.0,
-                    is_honeypot_hit=True,
-                )
-                await promo_repo.inc_used(promo.id, 1)
             await self._ban_user(user)
             await ActionLogRepo(self.session).log(
                 user_tg_id=user.tg_id,
@@ -92,43 +127,21 @@ class PromoService:
                 code=promo.code,
             )
 
-        if not promo.is_active:
-            return RedeemResult(status=PromoStatus.INACTIVE, code=promo.code)
-        if existing is not None:
-            return RedeemResult(status=PromoStatus.ALREADY_USED, code=promo.code)
-        if _expired(promo):
-            return RedeemResult(status=PromoStatus.EXPIRED, code=promo.code)
-        if promo.max_activations > 0 and promo.used_count >= promo.max_activations:
-            await promo_repo.set_active(promo.id, False)
-            return RedeemResult(status=PromoStatus.EXHAUSTED, code=promo.code)
-
         # начисляем
-        await activation_repo.create(
-            promo_id=promo.id,
-            user_id=user.id,
-            reward=promo.reward,
-            is_honeypot_hit=False,
-        )
-        await promo_repo.inc_used(promo.id, 1)
-        await UserRepo(self.session).add_balance(user.id, promo.reward)
-
-        # пере-проверим лимит после инкремента
-        refreshed = await promo_repo.get(promo.id)
-        if refreshed and refreshed.max_activations > 0 and refreshed.used_count >= refreshed.max_activations:
-            await promo_repo.set_active(promo.id, False)
+        await UserRepo(self.session).add_balance(user.id, reward, reason="promo_reward")
 
         await ActionLogRepo(self.session).log(
             user_tg_id=user.tg_id,
             action="promo_redeem",
-            payload={"promo_id": promo.id, "code": promo.code, "reward": promo.reward},
+            payload={"promo_id": promo.id, "code": promo.code, "reward": reward},
         )
 
         fresh_user = await UserRepo(self.session).get_by_id(user.id)
-        balance = round(fresh_user.balance, 2) if fresh_user else round(user.balance + promo.reward, 2)
+        balance = round(fresh_user.balance, 2) if fresh_user else round(user.balance + reward, 2)
 
         return RedeemResult(
             status=PromoStatus.OK,
-            reward=round(promo.reward, 2),
+            reward=float(reward),
             balance=balance,
             code=promo.code,
         )

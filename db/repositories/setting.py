@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.base import utcnow
 from db.models import Setting, SettingType
 from db.repositories.base import BaseRepo
+from core.logger import get_logger
+
+
+log = get_logger(__name__)
 
 
 def _cast(value: str, type_: str) -> Any:
@@ -48,10 +52,27 @@ class SettingRepo(BaseRepo):
         row = await self.get_raw(key)
         if row is None:
             return default
+
         try:
             return _cast(row.value, row.type)
-        except Exception:
-            return row.value
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            log.warning(
+                "setting_decode_failed",
+                key=key,
+                setting_type=row.type,
+                error=str(exc),
+            )
+            return default
+
+    async def get_many(self, keys: list[str]) -> dict[str, Any]:
+        result = await self.session.execute(select(Setting).where(Setting.key.in_(keys)))
+        values: dict[str, Any] = {}
+        for row in result.scalars():
+            try:
+                values[row.key] = _cast(row.value, row.type)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                log.warning("setting_decode_failed", key=row.key, setting_type=row.type)
+        return values
 
     async def set(self, key: str, value: Any, description: str | None = None) -> None:
         raw, type_ = _serialize(value)

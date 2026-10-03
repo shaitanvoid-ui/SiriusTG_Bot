@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Sponsor, SponsorKind
+from db.money import to_units
 from db.repositories.base import BaseRepo
 
 
@@ -34,7 +35,7 @@ class SponsorRepo(BaseRepo):
 
     async def set_reward(self, sponsor_id: int, reward: float) -> None:
         await self.session.execute(
-            update(Sponsor).where(Sponsor.id == sponsor_id).values(reward=reward)
+            update(Sponsor).where(Sponsor.id == sponsor_id).values(reward_units=to_units(reward))
         )
 
     async def set_subs_limit(self, sponsor_id: int, subs_limit: int) -> None:
@@ -53,7 +54,13 @@ class SponsorRepo(BaseRepo):
         return res.scalar_one_or_none()
 
     async def get_by_username(self, username: str) -> Sponsor | None:
-        res = await self.session.execute(select(Sponsor).where(Sponsor.username == username))
+        normalized = username.lstrip("@").lower()
+        res = await self.session.execute(
+            select(Sponsor)
+            .where(func.lower(Sponsor.username) == normalized)
+            .order_by(Sponsor.id.asc())
+            .limit(1)
+        )
         return res.scalar_one_or_none()
 
     async def create(
@@ -102,4 +109,49 @@ class SponsorRepo(BaseRepo):
             update(Sponsor)
             .where(Sponsor.id == sponsor_id)
             .values(subs_counter=Sponsor.subs_counter + delta)
+        )
+
+    async def try_reserve_counter(self, sponsor_id: int) -> bool:
+        """Занимает один оплачиваемый слот, не превышая лимит спонсора."""
+        result = await self.session.execute(
+            update(Sponsor)
+            .where(
+                Sponsor.id == sponsor_id,
+                Sponsor.is_active.is_(True),
+                Sponsor.is_required.is_(False),
+                or_(Sponsor.subs_limit == 0, Sponsor.subs_counter < Sponsor.subs_limit),
+            )
+            .values(
+                subs_counter=Sponsor.subs_counter + 1,
+                is_active=case(
+                    (
+                        (Sponsor.subs_limit > 0)
+                        & (Sponsor.subs_counter + 1 >= Sponsor.subs_limit),
+                        False,
+                    ),
+                    else_=Sponsor.is_active,
+                ),
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        return bool(result.rowcount)
+
+    async def release_counter(self, sponsor_id: int) -> None:
+        """Освобождает слот после подтверждённой отписки."""
+        await self.session.execute(
+            update(Sponsor)
+            .where(Sponsor.id == sponsor_id, Sponsor.subs_counter > 0)
+            .values(
+                subs_counter=Sponsor.subs_counter - 1,
+                is_active=case(
+                    (
+                        (Sponsor.is_required.is_(False))
+                        & (Sponsor.subs_limit > 0)
+                        & (Sponsor.subs_counter >= Sponsor.subs_limit),
+                        True,
+                    ),
+                    else_=Sponsor.is_active,
+                ),
+            )
+            .execution_options(synchronize_session="fetch")
         )

@@ -9,6 +9,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from sqlalchemy import event
+from sqlalchemy.orm import Session
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logger import get_logger
@@ -22,6 +25,14 @@ log = get_logger(__name__)
 # ---------- ключи и дефолты (единая точка истины) ----------
 
 DEFAULTS: dict[str, tuple[Any, str]] = {
+    "gifts.enabled": (False, "Разрешить оплату подтверждённых заявок после входа и назначения бюджета"),
+    "gifts.daily_budget_stars": (0, "Лимит настоящих Stars отправителя за сутки МСК; 0 приостанавливает оплату"),
+    "gifts.poll_seconds": (15, "Интервал обработки очереди, секунды"),
+    "gifts.lease_seconds": (120, "Срок владения заявкой воркером, не меньше 120 секунд"),
+    "gifts.max_attempts": (5, "Максимум безопасных повторов при временной ошибке до оплаты"),
+    "daily.reminders_enabled": (True, "Напоминания только пользователям, включившим их в профиле"),
+    "daily.reminder_hour_msk": (20, "Час тихого напоминания по Москве (10–21)"),
+    "daily.reminder_batch_size": (100, "Максимум напоминаний за один вечерний запуск"),
     # ---- рефералка ----
     "ref.reward": (3.0, "Награда рефереру за подтверждённого реферала, ⭐"),
     "ref.daily_limit": (0, "Лимит новых рефералов в сутки на одного юзера (0 — без лимита)"),
@@ -154,8 +165,8 @@ DEFAULTS: dict[str, tuple[Any, str]] = {
                 "a": "Бонус выдаётся один раз в день — новый день начинается в полночь по Москве. Если просишь повторно — загляни завтра. Стрик растёт за вход каждый день подряд и увеличивает награду.",
             },
             {
-                "q": "Как вывести звёзды?",
-                "a": "Звёзды копятся на балансе и обмениваются на подарки Telegram в разделе «💸 Вывод подарков». Следи за анонсами в нашем канале.",
+                "q": "Где посмотреть начисления?",
+                "a": "Открой «👤 Профиль» → «📜 История». Там собраны начисления и списания по всем активностям, кроме частых тапов кликера.",
             },
         ],
         "FAQ поддержки: список {q, a}",
@@ -181,23 +192,46 @@ class SettingsService:
         self.ttl = ttl_sec
 
     # in-process кэш — общий на всё приложение
-    _cache: dict[str, tuple[float, Any]] = {}
+    _cache: dict[tuple[object, str], tuple[float, Any]] = {}
 
     @classmethod
     def invalidate(cls, key: str | None = None) -> None:
         if key is None:
             cls._cache.clear()
         else:
-            cls._cache.pop(key, None)
+            for cache_key in list(cls._cache):
+                if cache_key[1] == key:
+                    cls._cache.pop(cache_key, None)
 
     async def get(self, key: str, default: Any = None) -> Any:
+        return (await self.get_many({key: default}))[key]
+
+    async def get_many(self, defaults: dict[str, Any]) -> dict[str, Any]:
+        """One DB round trip for misses; never share uncommitted values or defaults."""
         now = time.monotonic()
-        cached = self._cache.get(key)
-        if cached is not None and (now - cached[0]) < self.ttl:
-            return cached[1]
-        value = await SettingRepo(self.session).get(key, default)
-        self._cache[key] = (now, value)
-        return value
+        namespace = self.session.get_bind()
+        pending = self.session.info.get("settings_pending", {})
+        values: dict[str, Any] = {}
+        missing: list[str] = []
+        for key, default in defaults.items():
+            if key in pending:
+                values[key] = pending[key]
+                continue
+            cached = self._cache.get((namespace, key))
+            if cached is not None and now - cached[0] < self.ttl:
+                values[key] = cached[1]
+            else:
+                missing.append(key)
+        if missing:
+            loaded = await SettingRepo(self.session).get_many(missing)
+            for key in missing:
+                values[key] = loaded.get(key, defaults[key])
+                if key in loaded:
+                    self._cache[(namespace, key)] = (now, loaded[key])
+        return values
+
+    async def preload(self) -> None:
+        await self.get_many({key: value for key, (value, _) in DEFAULTS.items()})
 
     async def get_int(self, key: str, default: int) -> int:
         v = await self.get(key, default)
@@ -237,7 +271,37 @@ class SettingsService:
 
     async def set(self, key: str, value: Any, description: str | None = None) -> None:
         await SettingRepo(self.session).set(key, value, description)
+        self.session.info.setdefault("settings_pending", {})[key] = value
         self.invalidate(key)
+
+
+@event.listens_for(Session, "after_commit")
+@event.listens_for(Session, "after_rollback")
+def _clear_transaction_settings(session: Session) -> None:
+    if session.in_nested_transaction():
+        return
+    # Readers in other transactions may have cached the old committed value.
+    for key in session.info.pop("settings_pending", {}):
+        SettingsService.invalidate(key)
+    session.info.pop("settings_savepoints", None)
+
+
+@event.listens_for(Session, "after_transaction_create")
+def _snapshot_savepoint_settings(session: Session, transaction: Any) -> None:
+    if transaction.nested:
+        session.info.setdefault("settings_savepoints", {})[transaction] = dict(
+            session.info.get("settings_pending", {})
+        )
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _restore_savepoint_settings(session: Session, transaction: Any) -> None:
+    if not transaction.nested:
+        return
+    restored = session.info.get("settings_savepoints", {}).pop(transaction, {})
+    for key in set(session.info.get("settings_pending", {})) | set(restored):
+        SettingsService.invalidate(key)
+    session.info["settings_pending"] = restored
 
 
 async def seed_defaults() -> None:

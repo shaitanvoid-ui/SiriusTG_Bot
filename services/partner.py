@@ -20,8 +20,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from core.logger import get_logger
+from core.crypto import CryptoError, decrypt_field, encrypt_field
 from db.models import (
     Partner,
     PartnerLink,
@@ -35,6 +37,7 @@ from db.models import (
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.partner import PartnerLinkRepo, PartnerPayoutRepo, PartnerRepo
 from db.repositories.user import UserRepo
+from db.money import decimal_amount, from_units, settlement_units
 from services.settings import SettingsService
 
 
@@ -49,6 +52,7 @@ class PayoutRequestStatus(StrEnum):
     TOO_SMALL = "too_small"          # баланс меньше минимума
     ALREADY_PENDING = "already_pending"
     NOT_ACTIVE = "not_active"
+    SECURE_STORAGE_UNAVAILABLE = "secure_storage_unavailable"
 
 
 @dataclass(frozen=True)
@@ -130,8 +134,13 @@ class PartnerService:
         # своя же ссылка — не атрибуцируем
         if partner.user_id == user.id:
             return
-        user.partner_id = partner.id
-        user.partner_link_id = link.id
+        if not await UserRepo(self.session).try_set_partner_attribution(
+            user.id,
+            partner_id=partner.id,
+            partner_link_id=link.id,
+        ):
+            return
+        await self.session.refresh(user)
         await self.links.inc_joins(link.id)
         await ActionLogRepo(self.session).log(
             user_tg_id=user.tg_id,
@@ -147,16 +156,20 @@ class PartnerService:
         """
         if not await self.settings.get_bool("partner.enabled", True):
             return 0.0
-        if user.partner_id is None:
+        if user.partner_id is None or not await UserRepo(self.session).lock_rewards_allowed(user.id):
             return 0.0
         partner = await self.repo.get(user.partner_id)
         if partner is None or partner.is_deleted or partner.status != PartnerStatus.ACTIVE.value:
             return 0.0
-        amount = round(await self.reward_per_user(partner), 2)
+        if not await UserRepo(self.session).lock_rewards_allowed(partner.user_id):
+            return 0.0
+        amount = float(from_units(settlement_units(await self.reward_per_user(partner))))
+        if not await UserRepo(self.session).claim_partner_reward(user.id):
+            return 0.0
         if user.partner_link_id is not None:
             await self.links.inc_passed(user.partner_link_id)
         if amount > 0:
-            await self.repo.add_earning(partner.id, amount)
+            await self.repo.add_earning(partner.id, amount, reason="partner_commission")
             await ActionLogRepo(self.session).log(
                 user_tg_id=user.tg_id,
                 action="partner_cpa",
@@ -174,9 +187,11 @@ class PartnerService:
         if partner is None or partner.is_deleted or partner.status != PartnerStatus.ACTIVE.value:
             return 0.0
         percent = await self.percent_sponsor(partner)
-        amount = round(reward * percent / 100.0, 2)
+        if not await UserRepo(self.session).lock_rewards_allowed(partner.user_id):
+            return 0.0
+        amount = float(from_units(settlement_units(decimal_amount(reward) * decimal_amount(percent) / 100)))
         if amount > 0:
-            await self.repo.add_earning(partner.id, amount)
+            await self.repo.add_earning(partner.id, amount, reason="partner_commission")
             await ActionLogRepo(self.session).log(
                 user_tg_id=None,
                 action="partner_share",
@@ -189,12 +204,19 @@ class PartnerService:
     async def create_link(self, partner: Partner, title: str) -> PartnerLink | None:
         """None — достигнут лимит ссылок."""
         max_links = await self.settings.get_int("partner.max_links", 10)
-        if await self.links.count_for_partner(partner.id) >= max_links:
-            return None
-        code = _gen_code()
-        while await self.links.get_by_code(code) is not None:  # pragma: no cover
+        for _ in range(5):  # коллизия 8-символьного code крайне маловероятна
             code = _gen_code()
-        return await self.links.create(partner_id=partner.id, code=code, title=title[:64])
+            link = await self.links.create_if_below_limit(
+                partner_id=partner.id,
+                code=code,
+                title=title[:64],
+                limit=max_links,
+            )
+            if link is not None:
+                return link
+            if await self.links.count_for_partner(partner.id) >= max_links:
+                return None
+        return None  # pragma: no cover - только при пяти коллизиях code подряд
 
     # ---------- статистика ----------
 
@@ -216,7 +238,7 @@ class PartnerService:
     ) -> PayoutRequestResult:
         """Заявка на выплату всего баланса. Резервирует звёзды сразу."""
         min_amount = await self.settings.get_float("partner.min_payout_stars", 50.0)
-        if partner.status != PartnerStatus.ACTIVE.value or partner.is_deleted:
+        if not await UserRepo(self.session).lock_rewards_allowed(partner.user_id) or partner.status != PartnerStatus.ACTIVE.value or partner.is_deleted:
             return PayoutRequestResult(status=PayoutRequestStatus.NOT_ACTIVE, min_amount=min_amount)
         if await self.payouts.get_pending_for_partner(partner.id) is not None:
             return PayoutRequestResult(
@@ -225,8 +247,24 @@ class PartnerService:
         amount = round(partner.balance, 2)
         if amount < min_amount:
             return PayoutRequestResult(status=PayoutRequestStatus.TOO_SMALL, min_amount=min_amount)
-        if not await self.repo.subtract_balance(partner.id, amount):
-            return PayoutRequestResult(status=PayoutRequestStatus.TOO_SMALL, min_amount=min_amount)
+        try:
+            encrypted_requisites = encrypt_field(requisites[:255])
+        except CryptoError:
+            log.exception("partner_payout_encryption_unavailable", partner_id=partner.id)
+            return PayoutRequestResult(
+                status=PayoutRequestStatus.SECURE_STORAGE_UNAVAILABLE,
+                min_amount=min_amount,
+            )
+        if not await self.repo.reserve_payout_balance(partner.id, amount):
+            if await self.payouts.get_pending_for_partner(partner.id) is not None:
+                return PayoutRequestResult(
+                    status=PayoutRequestStatus.ALREADY_PENDING,
+                    min_amount=min_amount,
+                )
+            return PayoutRequestResult(
+                status=PayoutRequestStatus.TOO_SMALL,
+                min_amount=min_amount,
+            )
 
         rate = await self.settings.get_float("partner.rub_per_star", 1.5)
         payout = await self.payouts.create(
@@ -234,7 +272,7 @@ class PartnerService:
             amount_stars=amount,
             rate_rub=rate,
             method=method.value,
-            requisites=requisites[:255],
+            requisites=encrypted_requisites,
         )
         user = await UserRepo(self.session).get_by_id(partner.user_id)
         await ActionLogRepo(self.session).log(
@@ -245,11 +283,19 @@ class PartnerService:
         log.info("partner_payout_requested", partner_id=partner.id, stars=amount)
         return PayoutRequestResult(status=PayoutRequestStatus.OK, payout=payout, min_amount=min_amount)
 
+    @staticmethod
+    def payout_requisites(payout: PartnerPayout) -> str:
+        """Расшифровывает реквизиты только в момент показа уполномоченному админу."""
+        return decrypt_field(payout.requisites)
+
     async def mark_payout_paid(self, payout_id: int) -> PartnerPayout | None:
         payout = await self.payouts.get(payout_id)
         if payout is None or payout.status != PayoutStatus.PENDING.value:
             return None
-        await self.payouts.set_status(payout_id, PayoutStatus.PAID)
+        if not await self.payouts.set_status(payout_id, PayoutStatus.PAID):
+            return None
+        if not await self.repo.consume_payout_reserve(payout.partner_id, payout.amount_stars, reference=f"partner:payout:consume:{payout.id}"):
+            raise RuntimeError("partner payout reserve invariant failed")
         await ActionLogRepo(self.session).log(
             user_tg_id=None, action="partner_payout_paid", payload={"payout_id": payout_id}
         )
@@ -260,9 +306,29 @@ class PartnerService:
         payout = await self.payouts.get(payout_id)
         if payout is None or payout.status != PayoutStatus.PENDING.value:
             return None
-        await self.payouts.set_status(payout_id, PayoutStatus.REJECTED, note)
-        await self.repo.refund_balance(payout.partner_id, payout.amount_stars)
+        if not await self.payouts.set_status(payout_id, PayoutStatus.REJECTED, note):
+            return None
+        if not await self.repo.refund_balance(payout.partner_id, payout.amount_stars, reference=f"partner:payout:release:{payout.id}"):
+            raise RuntimeError("partner payout reserve invariant failed")
         await ActionLogRepo(self.session).log(
             user_tg_id=None, action="partner_payout_rejected", payload={"payout_id": payout_id}
         )
         return payout
+
+
+async def encrypt_legacy_payout_requisites(session: AsyncSession) -> int:
+    """Одноразово шифрует реквизиты, созданные до защищённого хранения."""
+    rows = list(
+        (
+            await session.execute(
+                select(PartnerPayout).where(
+                    ~PartnerPayout.requisites.startswith("enc:v1:")
+                )
+            )
+        ).scalars()
+    )
+    for payout in rows:
+        payout.requisites = encrypt_field(payout.requisites)
+    if rows:
+        log.info("partner_requisites_encrypted", count=len(rows))
+    return len(rows)

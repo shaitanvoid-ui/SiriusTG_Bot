@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import F, Router, html
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.keyboards.main_menu import kb_main_menu
 from db.models import User
 from db.repositories.user import UserRepo
 from locales.ru import T
-from services.level import LevelService
 from services.settings import SettingsService
+from services.dashboard import DashboardService
 from utils.tz import now_msk
-from utils.ui import brand_header, progress_bar, stars
+from utils.ui import brand_header, count_ru, html_text, progress_bar, stars
 
 
 router = Router(name="menu")
@@ -39,52 +43,57 @@ def _greeting() -> str:
 
 # ---------- core renderer ----------
 
-async def _build_caption(session: AsyncSession, user: User) -> tuple[str, str | None]:
+async def _build_caption(session: AsyncSession, user: User) -> tuple[str, InlineKeyboardMarkup]:
     settings_svc = SettingsService(session)
-    level_svc = LevelService(settings_svc)
+    await settings_svc.preload()
 
     brand_name = await settings_svc.get_str("brand.name", "SIRIUS")
     brand_tagline = await settings_svc.get_str("brand.tagline", "Stars Hub")
     channel_url = await settings_svc.get_str("channel.url", "")
     ref_reward = await settings_svc.get_float("ref.reward", 3.0)
 
-    info = await level_svc.compute(user.confirmed_ref_count)
+    view = await DashboardService(session, settings_svc).get_view(user)
+    info = view.level
     bar = progress_bar(info.progress_current, info.progress_total)
     if info.is_max:
         progress_text = T.menu_progress_max
     else:
         progress_text = T.menu_progress_to_next.format(
-            next_name=info.next_name,
-            to_next=info.to_next,
+            next_name=html_text(info.next_name or ""),
+            to_next_text=count_ru(info.to_next, "реферал", "реферала", "рефералов"),
         )
 
     name = html.quote(user.first_name or "друг")
     caption = T.menu_caption.format(
-        brand=brand_header(brand_name, brand_tagline),
+        brand=brand_header(html_text(brand_name), html_text(brand_tagline)),
         greeting=_greeting(),
         name=name,
         balance=stars(user.balance),
-        level_emoji=info.emoji,
-        level_name=info.name,
+        level_emoji=html_text(info.emoji),
+        level_name=html_text(info.name),
         confirmed_refs=user.confirmed_ref_count,
         progress_bar=bar,
         progress_text=progress_text,
         ref_reward=stars(ref_reward),
+        today_hint=html_text(view.next_action.detail),
+        today_action=html_text(view.next_action.label),
     )
-    return caption, (channel_url or None)
+    action = view.next_action
+    return caption, kb_main_menu(channel_url=channel_url or None,
+                                next_label=action.label, next_callback=action.callback)
 
 
 async def render_main_menu_message(message: Message, session: AsyncSession, user: User) -> None:
     """Отрисовка как нового сообщения (после онбординга или /start уже-прошедшему)."""
-    caption, channel_url = await _build_caption(session, user)
-    await message.answer(caption, reply_markup=kb_main_menu(channel_url=channel_url))
+    caption, keyboard = await _build_caption(session, user)
+    await message.answer(caption, reply_markup=keyboard)
 
 
 async def edit_to_main_menu(message: Message, session: AsyncSession, user: User) -> None:
     """Edit-in-place возврат в меню из дочернего раздела."""
-    caption, channel_url = await _build_caption(session, user)
-    with suppress(Exception):
-        await message.edit_text(caption, reply_markup=kb_main_menu(channel_url=channel_url))
+    caption, keyboard = await _build_caption(session, user)
+    with ignore_unchanged():
+        await message.edit_text(caption, reply_markup=keyboard)
 
 
 # ---------- callbacks ----------
@@ -111,7 +120,7 @@ async def cb_back_to_menu(
 @router.callback_query(F.data == "nav:close")
 async def cb_close(callback: CallbackQuery) -> None:
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramBadRequest):
             await callback.message.delete()
     await callback.answer()
 

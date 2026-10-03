@@ -60,10 +60,14 @@ async def _recheck_one(
             sponsor_service = SponsorService(
                 SponsorRepo(session), UserSubscriptionRepo(session)
             )
-            all_ok, _ = await sponsor_service.check_user(
+            all_ok, results = await sponsor_service.check_user(
                 bot, tg_id=tg_id, user_id=user_id, force=True
             )
             if all_ok:
+                await session.commit()
+                return False
+            if not any(result.is_definitively_not_subscribed for result in results):
+                # Ошибка Telegram/API не является доказательством отписки.
                 await session.commit()
                 return False
 
@@ -150,6 +154,7 @@ async def run_maturation() -> None:
         except Exception:
             await session.rollback()
             log.exception("maturation_failed")
+            raise
 
 
 def register_jobs(scheduler: AsyncIOScheduler, bot: Bot, *, interval_hours: int) -> None:

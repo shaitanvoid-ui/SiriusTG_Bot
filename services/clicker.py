@@ -18,6 +18,7 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import ClickerDay, User
+from db.money import decimal_amount, from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.clicker_day import ClickerDayRepo
 from db.repositories.user import UserRepo
@@ -33,6 +34,7 @@ SEP: str = "|"
 
 
 class ClickStatus(StrEnum):
+    BLOCKED = "blocked"
     OK = "ok"
     NEED_CAPTCHA = "need_captcha"
     TOO_FAST = "too_fast"
@@ -120,7 +122,7 @@ class ClickerService:
         cap_max = await self.settings.get_int("click.captcha_every_max", 30)
         if cap_max < cap_min:
             cap_max = cap_min
-        reward = round(base * float(info.click_mult), 4)
+        reward = float(from_units(settlement_units(decimal_amount(base) * decimal_amount(info.click_mult))))
         daily_limit = int(info.click_daily_limit)
         return reward, daily_limit, min_interval, cap_min, cap_max
 
@@ -128,9 +130,13 @@ class ClickerService:
         self, user: User, *, cap_min: int, cap_max: int
     ) -> ClickerDay:
         """Достаёт/создаёт ряд на сегодня, инициализирует threshold капчи."""
-        day_row = await ClickerDayRepo(self.session).get_or_create(user.id, _today())
+        repo = ClickerDayRepo(self.session)
+        day_row = await repo.get_or_create(user.id, _today())
         if day_row.captcha_threshold <= 0:
-            day_row.captcha_threshold = random.SystemRandom().randint(cap_min, cap_max)
+            await repo.ensure_captcha_threshold(
+                day_row.id, random.SystemRandom().randint(cap_min, cap_max)
+            )
+            await self.session.refresh(day_row)
         return day_row
 
     @staticmethod
@@ -165,6 +171,8 @@ class ClickerService:
         )
 
     async def click(self, user: User) -> ClickResult:
+        if not await UserRepo(self.session).lock_rewards_allowed(user.id):
+            return ClickResult(status=ClickStatus.BLOCKED, balance=round(user.balance, 2))
         info = await self.level_svc.compute(user.confirmed_ref_count)
         reward, daily_limit, min_interval, cap_min, cap_max = await self._econ(info)
         day_row = await self._load_day(user, cap_min=cap_min, cap_max=cap_max)
@@ -207,12 +215,49 @@ class ClickerService:
                     retry_after_ms=min_interval - diff,
                 )
 
-        # 4) начисляем
-        day_row.clicks += 1
-        day_row.earned = round(day_row.earned + reward, 4)
-        day_row.last_click_ms = now_ms
-        day_row.since_captcha += 1
-        await UserRepo(self.session).add_balance(user.id, reward)
+        # 4) Финальная проверка + запись одним UPDATE: повторный callback не
+        # сможет одновременно пройти rate-limit или дневной лимит.
+        clicked = await ClickerDayRepo(self.session).try_click(
+            row_id=day_row.id,
+            now_ms=now_ms,
+            min_interval_ms=min_interval,
+            daily_limit=daily_limit,
+            reward=reward,
+        )
+        if not clicked:
+            await self.session.refresh(day_row)
+            if day_row.captcha_token is not None:
+                return ClickResult(
+                    status=ClickStatus.NEED_CAPTCHA,
+                    clicks=day_row.clicks,
+                    daily_limit=daily_limit,
+                    earned_today=round(day_row.earned, 2),
+                    balance=round(user.balance, 2),
+                    captcha_required=True,
+                    captcha_hint=self._split(day_row.captcha_hint),
+                    captcha_choices=self._split(day_row.captcha_choices),
+                    captcha_token=day_row.captcha_token,
+                )
+            if day_row.clicks >= daily_limit:
+                return ClickResult(
+                    status=ClickStatus.DAILY_LIMIT,
+                    clicks=day_row.clicks,
+                    daily_limit=daily_limit,
+                    earned_today=round(day_row.earned, 2),
+                    balance=round(user.balance, 2),
+                )
+            retry = max(0, min_interval - max(0, now_ms - day_row.last_click_ms))
+            return ClickResult(
+                status=ClickStatus.TOO_FAST,
+                clicks=day_row.clicks,
+                daily_limit=daily_limit,
+                earned_today=round(day_row.earned, 2),
+                balance=round(user.balance, 2),
+                retry_after_ms=retry,
+            )
+
+        await self.session.refresh(day_row)
+        await UserRepo(self.session).add_balance(user.id, reward, reason="click_reward")
 
         captcha_required = False
         captcha_hint: tuple[str, ...] = ()

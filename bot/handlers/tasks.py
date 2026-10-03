@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router, html
 from aiogram.types import CallbackQuery
@@ -45,7 +46,7 @@ async def cb_list(
 
     svc = TasksService(session, SettingsService(session))
     if not await svc.enabled():
-        with suppress(Exception):
+        with ignore_unchanged():
             await callback.message.edit_text(T.tasks_disabled, reply_markup=kb_tasks_list([]))
         await callback.answer()
         return
@@ -53,7 +54,7 @@ async def cb_list(
     items = await svc.list_for_user(user)
     active = sum(1 for i in items if not i.is_completed)
     text = _render_list(len(items), active)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb_tasks_list(items))
     await callback.answer()
 
@@ -100,7 +101,7 @@ async def cb_open(
     is_completed = completion is not None
     url = SponsorService.display_link(sponsor) or None
     text = _format_card(sponsor, is_completed=is_completed)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             text,
             reply_markup=kb_task_card(sponsor.id, url, is_completed=is_completed),
@@ -134,6 +135,10 @@ async def cb_claim(
         return
     res: ClaimResult = await svc.claim(callback.bot, user=user, sponsor_id=sponsor_id)
 
+    if res.status == TaskStatus.BLOCKED:
+        await callback.answer(T.reward_restricted, show_alert=True)
+        return
+
     if res.status == TaskStatus.OK:
         await callback.answer(
             T.task_claim_ok_alert.format(reward=stars(res.reward)),
@@ -144,7 +149,7 @@ async def cb_claim(
         if sponsor is not None and callback.message is not None:
             url = SponsorService.display_link(sponsor) or None
             text = _format_card(sponsor, is_completed=True)
-            with suppress(Exception):
+            with ignore_unchanged():
                 await callback.message.edit_text(
                     text,
                     reply_markup=kb_task_card(sponsor.id, url, is_completed=True),
@@ -154,6 +159,9 @@ async def cb_claim(
 
     if res.status == TaskStatus.NOT_SUBSCRIBED:
         await callback.answer(T.task_not_subscribed_alert, show_alert=True)
+        return
+    if res.status == TaskStatus.UNAVAILABLE:
+        await callback.answer(T.task_check_unavailable_alert, show_alert=True)
         return
     if res.status == TaskStatus.ALREADY_DONE:
         await callback.answer(T.task_already_done_alert, show_alert=False)

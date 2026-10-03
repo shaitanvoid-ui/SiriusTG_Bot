@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
@@ -15,7 +16,7 @@ from locales.ru import T
 from services.referral import ReferralService
 from services.settings import SettingsService
 from utils.links import build_referral_link, build_share_url
-from utils.ui import stars
+from utils.ui import count_ru, html_text, stars
 
 
 router = Router(name="referral")
@@ -43,13 +44,13 @@ async def _render_caption(session: AsyncSession, user: User, link: str) -> str:
 
     return T.referral_caption.format(
         reward=stars(reward),
-        link=link,
+        link=html_text(link),
         total=stats["total"],
         confirmed=stats["confirmed"],
         matured=stats["matured"],
         earned=stars(stats["earned"]),
         debt_part=debt_part,
-        maturation_days=maturation_days,
+        maturation_text=count_ru(maturation_days, "день", "дня", "дней"),
         limit_part=limit_part,
     )
 
@@ -69,12 +70,12 @@ async def cb_open_referrals(
         return
     link = await build_referral_link(callback.bot, user.tg_id)
     caption = await _render_caption(session, user, link)
-    share_text = T.ref_share_text.format(link=link)
+    share_text = T.ref_share_text
     share_url = build_share_url(link, share_text)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             caption,
-            reply_markup=kb_referral(share_url=share_url),
+            reply_markup=kb_referral(share_url=share_url, invite_link=link),
             disable_web_page_preview=True,
         )
     await callback.answer()
@@ -94,9 +95,9 @@ async def cb_referral_text(
         await callback.answer()
         return
     link = await build_referral_link(callback.bot, user.tg_id)
-    share_text = T.ref_share_text.format(link=link)
-    caption = T.ref_share_view_caption + f"\n<pre>{share_text}</pre>"
-    with suppress(Exception):
+    share_text = T.ref_share_text
+    caption = T.ref_share_view_caption + f"\n<pre>{html_text(share_text)}\n{html_text(link)}</pre>"
+    with ignore_unchanged():
         await callback.message.edit_text(
             caption,
             reply_markup=kb_referral_text_view(),

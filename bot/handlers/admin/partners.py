@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import suppress
 
 from aiogram import Bot, F, Router, html
@@ -29,6 +30,7 @@ from db.repositories.partner import PartnerPayoutRepo, PartnerRepo
 from db.repositories.user import UserRepo
 from locales.ru import T
 from services.partner import PartnerService
+from core.crypto import CryptoError
 from services.settings import SettingsService
 from utils.tz import FMT_DATE_TIME, fmt_dt
 from utils.ui import stars
@@ -43,7 +45,7 @@ def _svc(session: AsyncSession) -> PartnerService:
     return PartnerService(session, SettingsService(session))
 
 
-async def _render_root(message, session: AsyncSession) -> None:
+async def _root_view(session: AsyncSession):
     repo = PartnerRepo(session)
     user_repo = UserRepo(session)
     partners = await repo.list_all(limit=25)
@@ -56,8 +58,13 @@ async def _render_root(message, session: AsyncSession) -> None:
             (p.id, T.admin_pa_row.format(status=status, name=_user_label(user), balance=f"{p.balance:.2f}"))
         )
     text = T.admin_pa_root.format(active=await repo.count_active(), pending=pending)
-    with suppress(Exception):
-        await message.edit_text(text, reply_markup=kb_pa_root(rows, pending))
+    return text, kb_pa_root(rows, pending)
+
+
+async def _render_root(message, session: AsyncSession) -> None:
+    text, markup = await _root_view(session)
+    with suppress(TelegramAPIError):
+        await message.edit_text(text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "adm:pa")
@@ -78,7 +85,7 @@ async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.set_state(PartnerAdminStates.waiting_user_query)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(T.admin_pa_add_prompt, reply_markup=kb_pa_cancel())
     await callback.answer()
 
@@ -96,16 +103,18 @@ async def msg_add(message: Message, state: FSMContext, session: AsyncSession, bo
         return
     await _svc(session).assign(user)
     await state.clear()
-    await message.answer(T.admin_pa_assigned.format(name=html.quote(_user_label(user))))
     with suppress(TelegramAPIError):
         await bot.send_message(user.tg_id, T.notify_partner_assigned)
-    sent = await message.answer("…")
-    await _render_root(sent, session)
+    text, markup = await _root_view(session)
+    await message.answer(
+        T.admin_pa_assigned.format(name=html.quote(_user_label(user))) + "\n\n" + text,
+        reply_markup=markup,
+    )
 
 
 # ---------- карточка ----------
 
-async def _render_card(message, session: AsyncSession, partner: Partner) -> None:
+async def _card_view(session: AsyncSession, partner: Partner):
     svc = _svc(session)
     st = await svc.stats(partner)
     user = await UserRepo(session).get_by_id(partner.user_id)
@@ -127,8 +136,13 @@ async def _render_card(message, session: AsyncSession, partner: Partner) -> None
         percent=f"{percent:g}",
         percent_mark=T.admin_pa_custom_mark if partner.percent_sponsor is not None else "",
     )
-    with suppress(Exception):
-        await message.edit_text(text, reply_markup=kb_pa_card(partner.id, is_active))
+    return text, kb_pa_card(partner.id, is_active)
+
+
+async def _render_card(message, session: AsyncSession, partner: Partner) -> None:
+    text, markup = await _card_view(session, partner)
+    with suppress(TelegramAPIError):
+        await message.edit_text(text, reply_markup=markup)
 
 
 async def _resolve(callback: CallbackQuery, session: AsyncSession) -> Partner | None:
@@ -179,7 +193,7 @@ async def cb_cpa(callback: CallbackQuery, state: FSMContext, session: AsyncSessi
     current = await svc.reward_per_user(partner)
     await state.set_state(PartnerAdminStates.waiting_cpa)
     await state.update_data(pa_id=partner.id)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_pa_cpa_prompt.format(
                 current=stars(current),
@@ -200,7 +214,7 @@ async def cb_pct(callback: CallbackQuery, state: FSMContext, session: AsyncSessi
     current = await svc.percent_sponsor(partner)
     await state.set_state(PartnerAdminStates.waiting_percent)
     await state.update_data(pa_id=partner.id)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_pa_percent_prompt.format(
                 current=f"{current:g}",
@@ -220,7 +234,7 @@ def _parse_rate(raw: str) -> tuple[float | None, bool]:
         value = round(float(raw), 2)
     except ValueError:
         return None, False
-    if value < 0:
+    if not math.isfinite(value) or value < 0 or value > 1_000_000:
         return None, False
     return value, True
 
@@ -233,6 +247,8 @@ async def _apply_rate(
     field: str,
 ) -> None:
     value, ok = _parse_rate(message.text or "")
+    if field == "percent" and value is not None and value > 100:
+        ok = False
     if not ok:
         await message.answer(T.admin_pa_rate_invalid, reply_markup=kb_pa_cancel())
         return
@@ -247,9 +263,8 @@ async def _apply_rate(
         await PartnerRepo(session).set_rates(partner.id, percent_sponsor=value)
     await state.clear()
     await session.refresh(partner)
-    await message.answer(T.admin_pa_rate_saved)
-    sent = await message.answer("…")
-    await _render_card(sent, session, partner)
+    text, markup = await _card_view(session, partner)
+    await message.answer(T.admin_pa_rate_saved + "\n\n" + text, reply_markup=markup)
 
 
 @router.message(PartnerAdminStates.waiting_cpa, F.text)
@@ -259,7 +274,7 @@ async def msg_cpa(message: Message, state: FSMContext, session: AsyncSession) ->
 
 @router.message(PartnerAdminStates.waiting_percent, F.text)
 async def msg_pct(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    await _apply_rate(message, state, session, field="pct")
+    await _apply_rate(message, state, session, field="percent")
 
 
 # ---------- заявки на выплату ----------
@@ -269,22 +284,32 @@ async def _render_payouts(message, session: AsyncSession) -> None:
     partner_repo = PartnerRepo(session)
     user_repo = UserRepo(session)
     rows: list[tuple[int, str]] = []
+    body_rows: list[str] = []
     for p in payouts:
         partner = await partner_repo.get(p.partner_id)
         user = await user_repo.get_by_id(partner.user_id) if partner else None
+        user_name = _user_label(user)
         rows.append(
             (
                 p.id,
                 T.admin_pa_payout_row.format(
                     id=p.id,
-                    name=_user_label(user),
+                    name=user_name,
                     stars=f"{p.amount_stars:.2f}⭐",
                     rub=f"{p.amount_rub:.2f}",
                 ),
             )
         )
-    body = "\n".join(label for _, label in rows) if rows else T.admin_pa_payouts_empty
-    with suppress(Exception):
+        body_rows.append(
+            T.admin_pa_payout_row.format(
+                id=p.id,
+                name=html.quote(user_name),
+                stars=f"{p.amount_stars:.2f}⭐",
+                rub=f"{p.amount_rub:.2f}",
+            )
+        )
+    body = "\n".join(body_rows) if body_rows else T.admin_pa_payouts_empty
+    with suppress(TelegramAPIError):
         await message.edit_text(
             T.admin_pa_payouts_caption.format(rows=body), reply_markup=kb_pa_payouts(rows)
         )
@@ -319,6 +344,10 @@ async def cb_payout_card(callback: CallbackQuery, session: AsyncSession) -> None
     method_name = (
         T.payout_method_card if payout.method == PayoutMethod.CARD.value else T.payout_method_yoomoney
     )
+    try:
+        requisites = PartnerService.payout_requisites(payout)
+    except CryptoError:
+        requisites = T.admin_pa_requisites_unavailable
     text = T.admin_pa_payout_card.format(
         id=payout.id,
         user_info=html.quote(_user_label(user)),
@@ -326,10 +355,10 @@ async def cb_payout_card(callback: CallbackQuery, session: AsyncSession) -> None
         rub=f"{payout.amount_rub:.2f}",
         rate=f"{payout.rate_rub:g}",
         method=method_name,
-        requisites=html.quote(payout.requisites),
+        requisites=html.quote(requisites),
         date=fmt_dt(payout.created_at, FMT_DATE_TIME) if payout.created_at else "—",
     )
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(text, reply_markup=kb_pa_payout_card(payout.id))
     await callback.answer()
 

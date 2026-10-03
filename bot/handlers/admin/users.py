@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import suppress
 
 from aiogram import F, Router, html
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.filters.admin import IsAdmin
 from bot.keyboards.admin_panel import kb_user_card, kb_user_search
 from bot.states.admin import UserAdminStates
+from core.config import settings
 from db.models import User
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.user import UserRepo
@@ -31,7 +34,7 @@ _YES = "✅"
 _NO = "—"
 
 
-async def _render_card(message, session: AsyncSession, user: User) -> None:
+async def _card_content(session: AsyncSession, user: User):
     logs = await ActionLogRepo(session).list_recent_for_user(user.tg_id, limit=5)
     if logs:
         actions = "\n".join(
@@ -56,18 +59,22 @@ async def _render_card(message, session: AsyncSession, user: User) -> None:
         streak=user.bonus_streak,
         passed=_YES if user.subs_passed_at is not None else _NO,
         banned="🚫" if user.is_banned else _NO,
-        shadow="👻" if user.is_shadow_banned else _NO,
         actions=actions,
         created=fmt_date(user.created_at) if user.created_at else "—",
     )
-    with suppress(Exception):
-        await message.edit_text(text, reply_markup=kb_user_card(user))
+    return text, kb_user_card(user)
+
+
+async def _render_card(message, session: AsyncSession, user: User) -> None:
+    text, markup = await _card_content(session, user)
+    with suppress(TelegramAPIError):
+        await message.edit_text(text, reply_markup=markup)
 
 
 async def _send_card(message: Message, session: AsyncSession, user: User) -> None:
     """То же, но новым сообщением (после текстового поиска)."""
-    sent = await message.answer("…")
-    await _render_card(sent, session, user)
+    text, markup = await _card_content(session, user)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "adm:usr")
@@ -76,7 +83,7 @@ async def cb_open(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     await state.set_state(UserAdminStates.waiting_query)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(T.admin_users_intro, reply_markup=kb_user_search())
     await callback.answer()
 
@@ -108,6 +115,9 @@ async def cb_ban(callback: CallbackQuery, session: AsyncSession) -> None:
     if user is None or callback.message is None:
         await callback.answer(T.admin_user_not_found, show_alert=True)
         return
+    if user.tg_id == settings.owner_id:
+        await callback.answer(T.admin_owner_protected, show_alert=True)
+        return
     await UserRepo(session).set_banned(target_id, True)
     await ActionLogRepo(session).log(
         user_tg_id=user.tg_id, action="admin_ban", payload=None
@@ -137,6 +147,9 @@ async def cb_shadow_on(callback: CallbackQuery, session: AsyncSession) -> None:
     target_id, user = await _resolve(callback, session)
     if user is None or callback.message is None:
         await callback.answer(T.admin_user_not_found, show_alert=True)
+        return
+    if user.tg_id == settings.owner_id:
+        await callback.answer(T.admin_owner_protected, show_alert=True)
         return
     await UserRepo(session).set_shadow_banned(target_id, True)
     await ActionLogRepo(session).log(
@@ -172,7 +185,7 @@ async def cb_balance(callback: CallbackQuery, state: FSMContext, session: AsyncS
         return
     await state.set_state(UserAdminStates.waiting_balance_delta)
     await state.update_data(target_user_id=target_id)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_user_balance_prompt.format(tg_id=user.tg_id, balance=stars(user.balance)),
             reply_markup=kb_user_search(),
@@ -188,6 +201,9 @@ async def msg_balance_delta(message: Message, state: FSMContext, session: AsyncS
     except ValueError:
         await message.answer(T.admin_user_balance_invalid)
         return
+    if not math.isfinite(delta) or abs(delta) > 1_000_000:
+        await message.answer(T.admin_user_balance_invalid)
+        return
     data = await state.get_data()
     target_id = int(data["target_user_id"])
     repo = UserRepo(session)
@@ -196,17 +212,18 @@ async def msg_balance_delta(message: Message, state: FSMContext, session: AsyncS
         await state.clear()
         await message.answer(T.admin_user_not_found, reply_markup=kb_user_search())
         return
+    target_tg_id = user.tg_id
     if delta >= 0:
         await repo.add_balance(target_id, delta)
     else:
         await repo.subtract_with_debt(target_id, -delta)
+    await session.refresh(user)
     await ActionLogRepo(session).log(
-        user_tg_id=user.tg_id, action="admin_balance_delta", payload={"delta": delta}
+        user_tg_id=target_tg_id,
+        action="admin_balance_delta",
+        payload={"delta": delta},
     )
     await state.clear()
-    # add_balance/subtract_with_debt мутируют ORM-объект в памяти без flush —
-    # refresh здесь экспайрил бы объект и ОТБРАСЫВАЛ начисление (баг «звёзды не прибавляются»).
-    await session.flush()
     await message.answer(
         T.admin_user_balance_done.format(
             delta=f"{delta:+.2f}⭐", balance=stars(user.balance)

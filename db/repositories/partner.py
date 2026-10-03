@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, literal, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import utcnow
-from db.models import Partner, PartnerLink, PartnerPayout, PartnerStatus, PayoutStatus
+from db.models import MoneyOperation, Partner, PartnerLink, PartnerPayout, PartnerStatus, PayoutStatus, User
+from db.money import MAX_UNITS, from_units, settlement_units, to_units
+from db.repositories.user import UserRepo
 from db.repositories.base import BaseRepo
 
 
@@ -51,7 +54,7 @@ class PartnerRepo(BaseRepo):
     ) -> None:
         values: dict = {}
         if reward_per_user is not ...:
-            values["reward_per_user"] = reward_per_user
+            values["reward_per_user_units"] = None if reward_per_user is None else to_units(reward_per_user)
         if percent_sponsor is not ...:
             values["percent_sponsor"] = percent_sponsor
         if values:
@@ -59,37 +62,62 @@ class PartnerRepo(BaseRepo):
                 update(Partner).where(Partner.id == partner_id).values(**values)
             )
 
-    async def add_earning(self, partner_id: int, amount: float) -> None:
-        """Начисление партнёру: balance и total_earned растут вместе."""
-        if amount <= 0:
-            return
-        await self.session.execute(
-            update(Partner)
-            .where(Partner.id == partner_id)
-            .values(
-                balance=func.round(Partner.balance + amount, 2),
-                total_earned=func.round(Partner.total_earned + amount, 2),
-            )
-        )
+    async def _change(self, partner_id: int, *, balance_delta: int = 0, reserved_delta: int = 0, earned_delta: int = 0, reason: str, reference: str | None = None, conditions=(), check_owner: bool = False) -> bool:
+        conditions = list(conditions)
+        if check_owner:
+            conditions.append(select(User.id).where(User.id == Partner.user_id, *UserRepo.reward_conditions()).exists())
+        if reference:
+            conditions.append(~select(MoneyOperation.id).where(MoneyOperation.reference == reference).exists())
+        old = (await self.session.execute(update(Partner).where(Partner.id == partner_id, *conditions)
+            .values(balance_units=Partner.balance_units)
+            .returning(Partner.balance_units, Partner.reserved_units, Partner.total_earned_units)
+            .execution_options(synchronize_session=False))).one_or_none()
+        if old is None:
+            return False
+        balance, reserved, earned = old[0]+balance_delta, old[1]+reserved_delta, old[2]+earned_delta
+        if any(value < 0 or value > MAX_UNITS for value in (balance, reserved, earned)):
+            raise ValueError("partner account outside integer storage bounds")
+        await self.session.execute(update(Partner).where(Partner.id == partner_id).values(
+            balance_units=balance, reserved_units=reserved, total_earned_units=earned
+        ).execution_options(synchronize_session="fetch"))
+        self.session.add(MoneyOperation(account_kind="partner", partner_id=partner_id, reason=reason, reference=reference,
+            balance_delta_units=balance_delta, debt_delta_units=0, reserved_delta_units=reserved_delta,
+            balance_after_units=balance, debt_after_units=0, reserved_after_units=reserved))
+        await self.session.flush()
+        return True
 
-    async def subtract_balance(self, partner_id: int, amount: float) -> bool:
-        """Атомарно списывает amount с баланса. False — если средств не хватает."""
-        res = await self.session.execute(
-            update(Partner)
-            .where(Partner.id == partner_id, Partner.balance >= amount)
-            .values(balance=func.round(Partner.balance - amount, 2))
-        )
-        return (res.rowcount or 0) > 0
+    async def add_earning(self, partner_id: int, amount, *, reason: str = "partner_credit", reference: str | None = None) -> bool:
+        units = settlement_units(amount)
+        if units <= 0:
+            return False
+        return await self._change(partner_id, balance_delta=units, earned_delta=units, reason=reason, reference=reference, check_owner=True,
+            conditions=(Partner.is_deleted.is_(False), Partner.status == PartnerStatus.ACTIVE.value))
 
-    async def refund_balance(self, partner_id: int, amount: float) -> None:
-        """Возврат зарезервированной суммы (отклонённая выплата) — без total_earned."""
-        if amount <= 0:
-            return
-        await self.session.execute(
-            update(Partner)
-            .where(Partner.id == partner_id)
-            .values(balance=func.round(Partner.balance + amount, 2))
-        )
+    async def subtract_balance(self, partner_id: int, amount) -> bool:
+        units = settlement_units(amount)
+        if units <= 0:
+            return False
+        return await self._change(partner_id, balance_delta=-units, reason="partner_debit", check_owner=True, conditions=(Partner.balance_units >= units,))
+
+    async def reserve_payout_balance(self, partner_id: int, amount) -> bool:
+        units = settlement_units(amount)
+        if units <= 0:
+            return False
+        pending_exists = select(PartnerPayout.id).where(PartnerPayout.partner_id == partner_id, PartnerPayout.status == PayoutStatus.PENDING.value).exists()
+        return await self._change(partner_id, balance_delta=-units, reserved_delta=units, reason="partner_payout_reserve", check_owner=True,
+            conditions=(Partner.status == PartnerStatus.ACTIVE.value, Partner.is_deleted.is_(False), Partner.balance_units >= units, ~pending_exists))
+
+    async def refund_balance(self, partner_id: int, amount, *, reference: str | None = None) -> bool:
+        units = settlement_units(amount)
+        if units <= 0:
+            return False
+        return await self._change(partner_id, balance_delta=units, reserved_delta=-units, reason="partner_payout_release", reference=reference,
+            conditions=(Partner.reserved_units >= units,))
+
+    async def consume_payout_reserve(self, partner_id: int, amount, *, reference: str) -> bool:
+        units = settlement_units(amount)
+        return await self._change(partner_id, reserved_delta=-units, reason="partner_payout_consume", reference=reference,
+            conditions=(Partner.reserved_units >= units,))
 
     async def count_active(self) -> int:
         res = await self.session.execute(
@@ -124,6 +152,34 @@ class PartnerLinkRepo(BaseRepo):
         self.session.add(link)
         await self.session.flush()
         return link
+
+    async def create_if_below_limit(
+        self, *, partner_id: int, code: str, title: str, limit: int
+    ) -> PartnerLink | None:
+        """Вставляет ссылку, атомарно соблюдая лимит партнёра."""
+        active_links = (
+            select(func.count(PartnerLink.id))
+            .where(
+                PartnerLink.partner_id == partner_id,
+                PartnerLink.is_deleted.is_(False),
+            )
+            .scalar_subquery()
+        )
+        stmt = (
+            sqlite_insert(PartnerLink)
+            .from_select(
+                ["partner_id", "code", "title"],
+                select(
+                    literal(partner_id),
+                    literal(code),
+                    literal(title),
+                ).where(active_links < max(0, limit)),
+            )
+            .on_conflict_do_nothing(index_elements=["code"])
+            .returning(PartnerLink.id)
+        )
+        link_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        return await self.session.get(PartnerLink, link_id) if link_id else None
 
     async def list_for_partner(self, partner_id: int) -> list[PartnerLink]:
         res = await self.session.execute(
@@ -202,9 +258,9 @@ class PartnerPayoutRepo(BaseRepo):
     ) -> PartnerPayout:
         payout = PartnerPayout(
             partner_id=partner_id,
-            amount_stars=round(amount_stars, 2),
-            rate_rub=round(rate_rub, 4),
-            amount_rub=round(amount_stars * rate_rub, 2),
+            amount_stars_units=settlement_units(amount_stars),
+            rate_rub_units=to_units(rate_rub),
+            amount_rub_units=settlement_units(from_units(settlement_units(amount_stars)) * from_units(to_units(rate_rub))),
             method=method,
             requisites=requisites,
             status=PayoutStatus.PENDING.value,
@@ -250,9 +306,15 @@ class PartnerPayoutRepo(BaseRepo):
 
     async def set_status(
         self, payout_id: int, status: PayoutStatus, note: str | None = None
-    ) -> None:
-        await self.session.execute(
+    ) -> bool:
+        """Переводит только pending-заявку; возвращает, кто выиграл гонку."""
+        result = await self.session.execute(
             update(PartnerPayout)
-            .where(PartnerPayout.id == payout_id)
+            .where(
+                PartnerPayout.id == payout_id,
+                PartnerPayout.status == PayoutStatus.PENDING.value,
+            )
             .values(status=status.value, note=note, processed_at=utcnow())
+            .execution_options(synchronize_session="fetch")
         )
+        return bool(result.rowcount)

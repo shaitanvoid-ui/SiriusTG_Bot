@@ -30,5 +30,5 @@ class UserService:
             referrer_tg_id=referrer_tg_id,
         )
         if created:
-            log.info("user_created", tg_id=tg_user.id, username=tg_user.username)
+            log.info("user_created", user_id=user.id)
         return user, created

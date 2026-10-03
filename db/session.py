@@ -3,21 +3,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.config import settings
+from db.engine import create_app_engine
 
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=False,
-    pool_pre_ping=True,
-    future=True,
-)
+engine = create_app_engine(settings.database_url)
 
 SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     bind=engine,

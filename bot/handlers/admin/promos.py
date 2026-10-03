@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import re
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,7 +52,7 @@ async def _render_list(callback: CallbackQuery, session: AsyncSession) -> None:
         head = T.admin_promos_count.format(total=total, active=active, honeypots=honeypots)
     text = T.admin_promos_root.format(count_line=head)
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(text, reply_markup=kb_promos_list(promos))
 
 
@@ -90,7 +92,7 @@ def _format_card(p: Promo) -> str:
 
 async def _render_card(callback: CallbackQuery, p: Promo) -> None:
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(_format_card(p), reply_markup=kb_promo_card(p))
 
 
@@ -143,7 +145,7 @@ async def cb_delete_ask(callback: CallbackQuery, session: AsyncSession) -> None:
         await callback.answer(T.admin_promo_deleted, show_alert=True)
         return
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
                 _format_card(p) + "\n\n<b>Удалить этот промокод?</b>",
                 reply_markup=kb_promo_delete_confirm(pid),
@@ -169,7 +171,7 @@ async def cb_add_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddPromoStates.waiting_code)
     if callback.message is not None:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(T.addpromo_step1, reply_markup=kb_promo_add_cancel())
     await callback.answer()
 
@@ -219,7 +221,7 @@ async def msg_reward(message: Message, state: FSMContext) -> None:
     except ValueError:
         await message.answer(T.addpromo_reward_invalid, reply_markup=kb_promo_add_cancel())
         return
-    if reward < 0 or reward > 1_000_000:
+    if not math.isfinite(reward) or reward < 0 or reward > 1_000_000:
         await message.answer(T.addpromo_reward_invalid, reply_markup=kb_promo_add_cancel())
         return
     reward = round(reward, 2)
@@ -294,7 +296,7 @@ async def cb_honeypot(
     )
     await state.clear()
     await callback.answer(T.addpromo_created_alert)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.addpromo_created.format(code=promo.code) + "\n\n" + _format_card(promo),
             reply_markup=kb_promo_card(promo),

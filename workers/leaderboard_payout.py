@@ -21,6 +21,7 @@ from core.logger import get_logger
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.leaderboard_payout import LeaderboardPayoutRepo
 from db.repositories.user import UserRepo
+from db.money import from_units, settlement_units
 from db.session import SessionLocal
 from locales.ru import T
 from services.leaderboard import period_since
@@ -69,7 +70,7 @@ async def run_leaderboard_payout(bot: Bot) -> None:
             rewards = await settings_svc.get_list(
                 "leaderboard.weekly_rewards", _DEFAULT_REWARDS
             )
-            rewards = [float(r) for r in rewards]
+            rewards = [float(from_units(settlement_units(r))) for r in rewards]
             if not rewards:
                 return
             min_conf = await settings_svc.get_int("leaderboard.min_confirmed_refs", 10)
@@ -87,7 +88,8 @@ async def run_leaderboard_payout(bot: Bot) -> None:
                 reward = rewards[idx] if idx < len(rewards) else 0.0
                 if reward <= 0:
                     continue
-                await user_repo.add_balance(ru_id, reward)
+                if not await user_repo.add_balance(ru_id, reward, reason="leaderboard_reward", reference=f"leaderboard:{wk}:{ru_id}"):
+                    continue
                 await payout_repo.create(
                     week_key=wk, user_id=ru_id, rank=idx + 1, amount=reward
                 )
@@ -103,7 +105,7 @@ async def run_leaderboard_payout(bot: Bot) -> None:
         except Exception:
             await session.rollback()
             log.exception("leaderboard_payout_failed", week=wk)
-            return
+            raise
 
     # уведомления — после коммита, не блокируем транзакцию IO-вызовами
     for tg_id, rank, amount, notify in payouts:

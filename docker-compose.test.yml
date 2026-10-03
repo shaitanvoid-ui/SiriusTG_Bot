@@ -1,0 +1,29 @@
+name: siriustg_bot_tests
+
+services:
+  test:
+    build:
+      context: .
+      target: test
+    environment:
+      ENV: test
+      LOG_LEVEL: WARNING
+      BOT_TOKEN: "1234567890:LOCAL_TEST_TOKEN_DO_NOT_USE"
+      OWNER_ID: "1"
+      ADMIN_IDS: ""
+      LOG_CHANNEL_ID: ""
+      DATABASE_URL: sqlite+aiosqlite:////tmp/sirius-test.db
+      FSM_STORAGE_PATH: /tmp/sirius-fsm-test.db
+      FERNET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      TG_API_ID: ""
+      TG_API_HASH: ""
+      USERBOT_PHONE: ""
+      USERBOT_ACCOUNT_ID: ""
+      BACKUP_USERBOT_PHONE: ""
+      HEALTH_HOST: 127.0.0.1
+      HEALTH_PORT: "8081"
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777

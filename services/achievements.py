@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logger import get_logger
 from db.models import User
+from db.money import from_units, settlement_units
 from db.repositories.action_log import ActionLogRepo
 from db.repositories.clicker_day import ClickerDayRepo
 from db.repositories.user import UserRepo
@@ -86,6 +87,8 @@ class AchievementsService:
 
     async def sync(self, user: User) -> list[AwardedAchievement]:
         """Начисляет все свежезаработанные достижения. Возвращает новые."""
+        if not await self.user_repo.lock_rewards_allowed(user.id):
+            return []
         if not await self.enabled():
             return []
         cfg = await self._config()
@@ -102,12 +105,15 @@ class AchievementsService:
                 threshold = float(a["threshold"])
             except (TypeError, ValueError, KeyError):
                 continue
-            reward = float(a.get("reward", 0.0))
+            reward = float(from_units(settlement_units(a.get("reward", 0.0))))
             if metrics.get(metric, 0) < threshold:
                 continue
-            await self.ach_repo.create(user_id=user.id, code=code, reward=reward)
+            if not await self.ach_repo.create_if_absent(
+                user_id=user.id, code=code, reward=reward
+            ):
+                continue
             if reward > 0:
-                await self.user_repo.add_balance(user.id, reward)
+                await self.user_repo.add_balance(user.id, reward, reason="achievement_reward")
             await ActionLogRepo(self.session).log(
                 user_tg_id=user.tg_id,
                 action="achievement",

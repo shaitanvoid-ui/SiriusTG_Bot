@@ -1,8 +1,6 @@
-"""Gate-middlewares (terms / captcha / subs).
+"""Gate-middlewares (terms / captcha / subs) для ready-пользовательских роутеров.
 
-Применяются к роутеру 'gated' (главное меню, кликер и т.д.).
-В Этапе 2 главного меню ещё нет — middleware пока никому не мешают,
-но интерфейс зафиксирован для Этапа 3+.
+Onboarding и административные роутеры подключены вне ready и не блокируются.
 """
 
 from __future__ import annotations

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, literal, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import utcnow
+from db.money import from_units, settlement_units, to_units
 from db.models import Referral, ReferralSource, User
 from db.repositories.base import BaseRepo
 
@@ -36,6 +38,47 @@ class ReferralRepo(BaseRepo):
         await self.session.flush()
         return ref
 
+    async def create_if_absent(
+        self,
+        *,
+        referrer_user_id: int,
+        referred_user_id: int,
+        source: ReferralSource = ReferralSource.DIRECT,
+        daily_limit: int = 0,
+    ) -> Referral | None:
+        source_value = source.value if isinstance(source, ReferralSource) else source
+        insert_stmt = sqlite_insert(Referral)
+        if daily_limit > 0:
+            since = utcnow() - timedelta(hours=24)
+            used_slots = (
+                select(func.count(Referral.id))
+                .where(
+                    Referral.referrer_user_id == referrer_user_id,
+                    Referral.created_at >= since,
+                )
+                .scalar_subquery()
+            )
+            insert_stmt = insert_stmt.from_select(
+                ["referrer_user_id", "referred_user_id", "source"],
+                select(
+                    literal(referrer_user_id),
+                    literal(referred_user_id),
+                    literal(source_value),
+                ).where(used_slots < daily_limit),
+            )
+        else:
+            insert_stmt = insert_stmt.values(
+                referrer_user_id=referrer_user_id,
+                referred_user_id=referred_user_id,
+                source=source_value,
+            )
+        stmt = (
+            insert_stmt.on_conflict_do_nothing(index_elements=["referred_user_id"])
+            .returning(Referral.id)
+        )
+        referral_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        return await self.session.get(Referral, referral_id) if referral_id else None
+
     async def count_today_by_referrer(self, referrer_user_id: int) -> int:
         since = utcnow() - timedelta(hours=24)
         res = await self.session.execute(
@@ -52,31 +95,68 @@ class ReferralRepo(BaseRepo):
         *,
         reward: float,
         at: datetime | None = None,
-    ) -> None:
-        ref = await self.session.get(Referral, referral_id)
-        if ref is None:
+    ) -> bool:
+        result = await self.session.execute(
+            update(Referral)
+            .where(
+                Referral.id == referral_id,
+                Referral.is_confirmed.is_(False),
+            )
+            .values(
+                is_confirmed=True,
+                is_rewarded=True,
+                reward_amount_units=to_units(reward),
+                confirmed_at=at or utcnow(),
+                lost_at=None,
+            )
+            .returning(Referral.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def claim_loss(self, referral_id: int) -> bool:
+        """Атомарно резервирует откат подтверждённого незрелого реферала."""
+        result = await self.session.execute(
+            update(Referral)
+            .where(
+                Referral.id == referral_id,
+                Referral.is_confirmed.is_(True),
+                Referral.is_matured.is_(False),
+            )
+            .values(is_confirmed=False, is_rewarded=False, lost_at=utcnow())
+            .returning(Referral.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def add_loss_debt(self, referral_id: int, debt: float) -> None:
+        if debt <= 0:
             return
-        ref.is_confirmed = True
-        ref.is_rewarded = True
-        ref.reward_amount = reward
-        ref.confirmed_at = at or utcnow()
-        ref.lost_at = None
+        await self.session.execute(
+            update(Referral)
+            .where(Referral.id == referral_id)
+            .values(debt_amount_units=Referral.debt_amount_units + settlement_units(debt))
+            .execution_options(synchronize_session="fetch")
+        )
 
     async def mark_lost(self, referral_id: int, *, debt: float = 0.0) -> None:
-        ref = await self.session.get(Referral, referral_id)
-        if ref is None:
-            return
-        ref.is_confirmed = False
-        ref.is_rewarded = False
-        ref.debt_amount = round(ref.debt_amount + debt, 2)
-        ref.lost_at = utcnow()
+        """Совместимый фасад для старых вызовов."""
+        if await self.claim_loss(referral_id):
+            await self.add_loss_debt(referral_id, debt)
 
-    async def mark_matured(self, referral_id: int, at: datetime | None = None) -> None:
-        ref = await self.session.get(Referral, referral_id)
-        if ref is None:
-            return
-        ref.is_matured = True
-        ref.matured_at = at or utcnow()
+    async def mark_matured(self, referral_id: int, at: datetime | None = None) -> bool:
+        result = await self.session.execute(
+            update(Referral)
+            .where(
+                Referral.id == referral_id,
+                Referral.is_confirmed.is_(True),
+                Referral.is_matured.is_(False),
+            )
+            .values(is_matured=True, matured_at=at or utcnow())
+            .returning(Referral.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        return result.scalar_one_or_none() is not None
 
     async def list_for_maturation(self, *, maturation_days: int, limit: int = 500) -> list[Referral]:
         threshold = utcnow() - timedelta(days=maturation_days)
@@ -100,8 +180,8 @@ class ReferralRepo(BaseRepo):
                 func.count(Referral.id),
                 func.coalesce(func.sum(confirmed_case), 0),
                 func.coalesce(func.sum(matured_case), 0),
-                func.coalesce(func.sum(Referral.reward_amount), 0.0),
-                func.coalesce(func.sum(Referral.debt_amount), 0.0),
+                func.coalesce(func.sum(Referral.reward_amount_units), 0),
+                func.coalesce(func.sum(Referral.debt_amount_units), 0),
             ).where(Referral.referrer_user_id == referrer_user_id)
         )
         total, confirmed, matured, earned, debt = res.one()
@@ -109,8 +189,8 @@ class ReferralRepo(BaseRepo):
             "total": int(total or 0),
             "confirmed": int(confirmed or 0),
             "matured": int(matured or 0),
-            "earned": float(earned or 0.0),
-            "debt": float(debt or 0.0),
+            "earned": float(from_units(earned or 0)),
+            "debt": float(from_units(debt or 0)),
         }
 
     # ---------- лидерборд (Этап 6) ----------
@@ -141,7 +221,7 @@ class ReferralRepo(BaseRepo):
                 User.username,
             )
             .join(User, User.id == Referral.referrer_user_id)
-            .where(*conds, User.is_banned.is_(False), User.is_deleted.is_(False))
+            .where(*conds, User.is_banned.is_(False), User.is_shadow_banned.is_(False), User.is_deleted.is_(False))
             .group_by(Referral.referrer_user_id, User.tg_id, User.first_name, User.username)
             .having(func.count(Referral.id) >= min_confirmed)
             .order_by(func.count(Referral.id).desc(), Referral.referrer_user_id.asc())
@@ -177,7 +257,7 @@ class ReferralRepo(BaseRepo):
         sub = (
             select(Referral.referrer_user_id)
             .join(User, User.id == Referral.referrer_user_id)
-            .where(*conds, User.is_banned.is_(False), User.is_deleted.is_(False))
+            .where(*conds, User.is_banned.is_(False), User.is_shadow_banned.is_(False), User.is_deleted.is_(False))
             .group_by(Referral.referrer_user_id)
             .having(cnt > score)
             .subquery()

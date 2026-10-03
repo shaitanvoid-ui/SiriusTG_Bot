@@ -6,6 +6,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 
 from db.session import SessionLocal
+from services.settings import SettingsService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -21,6 +22,7 @@ class DbSessionMiddleware(BaseMiddleware):
             data["session"] = session
             data["db_session"] = session  # alias
             try:
+                await SettingsService(session).preload()
                 result = await handler(event, data)
                 await session.commit()
                 return result

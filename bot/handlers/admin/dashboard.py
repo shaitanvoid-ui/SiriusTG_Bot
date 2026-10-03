@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 
 from aiogram import F, Router, html
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +33,6 @@ async def cb_dash(callback: CallbackQuery, session: AsyncSession) -> None:
         users_passed=s.users_passed,
         users_new_today=s.users_new_today,
         users_banned=s.users_banned,
-        users_shadow=s.users_shadow,
         balance_total=stars(s.balance_total),
         debt_total=stars(s.debt_total),
         clicks_today=s.clicks_today,
@@ -42,7 +42,7 @@ async def cb_dash(callback: CallbackQuery, session: AsyncSession) -> None:
         refs_today=s.refs_today,
         reviews_pending=s.reviews_pending,
     )
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(text, reply_markup=kb_dash("adm:dash"))
     await callback.answer()
 
@@ -75,6 +75,6 @@ async def cb_sys(callback: CallbackQuery, session: AsyncSession) -> None:
         channel_state=channel_state,
         log_channel=log_channel,
     )
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(text, reply_markup=kb_dash("adm:sys"))
     await callback.answer()

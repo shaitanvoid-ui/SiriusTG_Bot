@@ -119,11 +119,27 @@ async def test_admin_balance_delta_subtract_goes_to_debt(session):
     assert fresh.debt == 3.0
 
 
+async def test_admin_balance_delta_rejects_non_finite_number(session):
+    user = await create_user(session, tg_id=999000807, balance=2.0)
+    state = _admin_state()
+    await state.set_state(UserAdminStates.waiting_balance_delta)
+    await state.update_data(target_user_id=user.id)
+
+    await msg_balance_delta(_FakeAdminMessage("nan"), state, session)
+    await session.commit()
+
+    fresh = await UserRepo(session).get_by_id(user.id)
+    assert fresh.balance == 2.0
+    assert fresh.debt == 0.0
+
+
 # ---------- экономика ----------
 
-def test_eco_groups_cover_all_defaults():
+def test_eco_groups_cover_all_released_defaults():
     keys_in_groups = [k for keys in eco_groups().values() for k in keys]
-    assert sorted(keys_in_groups) == sorted(DEFAULTS.keys())
+    released = list(DEFAULTS)
+    assert sorted(keys_in_groups) == sorted(released)
+    assert "withdraw" in eco_groups() and "gifts" in eco_groups()
 
 
 def test_parse_value_types():

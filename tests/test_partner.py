@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from db.base import utcnow
 from db.models import PartnerStatus, PayoutMethod, PayoutStatus
 from db.repositories.partner import PartnerLinkRepo, PartnerPayoutRepo, PartnerRepo
+from db.repositories.user import UserRepo
 from services.partner import PartnerService, PayoutRequestStatus
 from services.settings import SettingsService
 from services.sponsor import SponsorService
@@ -65,6 +68,41 @@ async def test_track_start_attribution(session):
     passed_user = await create_user(session, tg_id=999001004, subs_passed_at=utcnow())
     await svc.track_start(passed_user, link.code)
     assert passed_user.partner_id is None
+
+
+async def test_parallel_track_start_keeps_single_attribution(session, session_factory):
+    first_owner = await create_user(session, tg_id=999001017)
+    second_owner = await create_user(session, tg_id=999001018)
+    first_partner = await _svc(session).assign(first_owner)
+    second_partner = await _svc(session).assign(second_owner)
+    first_link = await _svc(session).create_link(first_partner, "first")
+    second_link = await _svc(session).create_link(second_partner, "second")
+    visitor = await create_user(session, tg_id=999001019)
+    assert first_link is not None and second_link is not None
+    visitor_id = visitor.id
+    link_codes = [first_link.code, second_link.code]
+    await session.commit()
+
+    async def track(code: str) -> None:
+        async with session_factory() as worker_session:
+            worker_user = await UserRepo(worker_session).get_by_id(visitor_id)
+            assert worker_user is not None
+            await _svc(worker_session).track_start(worker_user, code)
+            await worker_session.commit()
+
+    await asyncio.gather(*(track(code) for code in link_codes))
+
+    async with session_factory() as check_session:
+        fresh_user = await UserRepo(check_session).get_by_id(visitor_id)
+        fresh_first = await PartnerLinkRepo(check_session).get(first_link.id)
+        fresh_second = await PartnerLinkRepo(check_session).get(second_link.id)
+        assert fresh_user is not None
+        assert (fresh_user.partner_id, fresh_user.partner_link_id) in {
+            (first_partner.id, first_link.id),
+            (second_partner.id, second_link.id),
+        }
+        assert fresh_first is not None and fresh_second is not None
+        assert fresh_first.joins + fresh_second.joins == 1
 
 
 # ---------- начисления ----------
@@ -151,6 +189,28 @@ async def test_create_link_limit(session):
     assert await PartnerLinkRepo(session).count_for_partner(partner.id) == 2
 
 
+async def test_parallel_create_link_respects_limit(session, session_factory):
+    owner = await create_user(session, tg_id=999001016)
+    partner = await _svc(session).assign(owner)
+    partner_id = partner.id
+    await SettingsService(session).set("partner.max_links", 1)
+    await session.commit()
+
+    async def create(title: str) -> bool:
+        async with session_factory() as worker_session:
+            worker_partner = await PartnerRepo(worker_session).get(partner_id)
+            assert worker_partner is not None
+            link = await _svc(worker_session).create_link(worker_partner, title)
+            await worker_session.commit()
+            return link is not None
+
+    created = await asyncio.gather(create("one"), create("two"))
+    assert sorted(created) == [False, True]
+
+    async with session_factory() as check_session:
+        assert await PartnerLinkRepo(check_session).count_for_partner(partner_id) == 1
+
+
 # ---------- выплаты ----------
 
 async def test_payout_lifecycle(session):
@@ -177,8 +237,13 @@ async def test_payout_lifecycle(session):
     assert payout.amount_stars == 100.0
     assert payout.rate_rub == 1.5
     assert payout.amount_rub == 150.0
+    assert payout.requisites.startswith("enc:v1:")
+    assert "1234 5678" not in payout.requisites
+    assert svc.payout_requisites(payout) == "1234 5678"
     await session.refresh(partner)
     assert partner.balance == 0.0
+
+
     assert partner.total_earned == 100.0  # total не трогаем
 
     # вторая заявка при pending — отказ
@@ -214,6 +279,41 @@ async def test_payout_lifecycle(session):
     assert partner.balance == 0.0
 
 
+async def test_parallel_payout_requests_create_only_one_pending(
+    session, session_factory
+):
+    owner = await create_user(session, tg_id=999001015)
+    partner = await _svc(session).assign(owner)
+    await PartnerRepo(session).add_earning(partner.id, 100.0)
+    partner_id = partner.id
+    await session.commit()
+
+    async def request_once() -> PayoutRequestStatus:
+        async with session_factory() as worker_session:
+            worker_partner = await PartnerRepo(worker_session).get(partner_id)
+            assert worker_partner is not None
+            result = await _svc(worker_session).request_payout(
+                worker_partner,
+                method=PayoutMethod.YOOMONEY,
+                requisites="410011",
+            )
+            await worker_session.commit()
+            return result.status
+
+    statuses = await asyncio.gather(request_once(), request_once())
+    assert sorted(statuses) == [
+        PayoutRequestStatus.ALREADY_PENDING,
+        PayoutRequestStatus.OK,
+    ]
+
+    async with session_factory() as check_session:
+        fresh_partner = await PartnerRepo(check_session).get(partner_id)
+        payouts = await PartnerPayoutRepo(check_session).list_for_partner(partner_id)
+        assert fresh_partner is not None and fresh_partner.balance == 0.0
+        assert len(payouts) == 1
+        assert payouts[0].status == PayoutStatus.PENDING.value
+
+
 # ---------- рендер панелей (формат-строки локалей) ----------
 
 class _FakeMsg:
@@ -233,7 +333,7 @@ async def test_partner_panel_renders(session):
     partner = await _svc(session).assign(owner)
     msg = _FakeMsg()
     await _render_root(msg, session, partner)
-    assert msg.text is not None and "ПАРТНЁРСКАЯ ПАНЕЛЬ" in msg.text
+    assert msg.text is not None and "партнёрская панель" in msg.text.lower()
 
 
 async def test_admin_partner_card_renders(session):
@@ -248,11 +348,29 @@ async def test_admin_partner_card_renders(session):
 
     msg2 = _FakeMsg()
     await _render_root(msg2, session)
-    assert msg2.text is not None and "@pnick" in msg2.text or "ПАРТНЁРЫ" in msg2.text
+    assert msg2.text is not None and "партнёры" in msg2.text.lower()
+
+    owner.username = None
+    owner.first_name = "<b>R&D</b>"
+    await PartnerRepo(session).add_earning(partner.id, 100.0)
+    await session.refresh(partner)
+    payout_result = await _svc(session).request_payout(
+        partner, method=PayoutMethod.CARD, requisites="1234 5678"
+    )
+    assert payout_result.status == PayoutRequestStatus.OK
 
     msg3 = _FakeMsg()
     await _render_payouts(msg3, session)
     assert msg3.text is not None
+    assert "&lt;b&gt;R&amp;D&lt;/b&gt;" in msg3.text
+    assert "<b>R&D</b>" not in msg3.text
+    button_texts = [
+        button.text
+        for row in msg3.markup.inline_keyboard
+        for button in row
+        if button.text
+    ]
+    assert any("<b>R&D</b>" in text for text in button_texts)
 
 
 # ---------- /start payload ----------

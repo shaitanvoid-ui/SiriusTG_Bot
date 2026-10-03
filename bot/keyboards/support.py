@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.keyboards import SiriusKeyboardBuilder as InlineKeyboardBuilder
 
 from db.models import SupportTicket, TicketStatus
 from locales.ru import T
+from utils.ui import button_text
 
 
 # ---------- юзер ----------
@@ -16,7 +17,7 @@ def kb_support_home() -> InlineKeyboardMarkup:
     b.button(text=T.btn_support_faq, callback_data="sup:faq")
     b.button(text=T.btn_support_new, callback_data="sup:new")
     b.button(text=T.btn_support_my, callback_data="sup:my")
-    b.button(text="◀ Назад", callback_data="sec:help")
+    b.button(text=T.btn_back_help, callback_data="sec:help")
     b.adjust(1, 1, 1, 1)
     return b.as_markup()
 
@@ -24,9 +25,10 @@ def kb_support_home() -> InlineKeyboardMarkup:
 def kb_faq_list(questions: list[str]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for idx, question in enumerate(questions):
-        b.button(text=question, callback_data=f"sup:faq:{idx}")
+        b.button(text=button_text(f"❔ {question}"), callback_data=f"sup:faq:{idx}")
+    b.button(text=T.btn_support_new, callback_data="sup:new")
     b.button(text=T.btn_support_back, callback_data="sup:open")
-    b.adjust(*([1] * (len(questions) + 1)))
+    b.adjust(*([1] * (len(questions) + 2)))
     return b.as_markup()
 
 
@@ -40,14 +42,34 @@ def kb_faq_answer() -> InlineKeyboardMarkup:
 
 def kb_support_cancel() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="✕ Отменить", callback_data="sup:cancel")
+    b.button(text=T.btn_cancel, callback_data="sup:cancel")
+    return b.as_markup()
+
+
+def kb_support_reply_cancel(ticket_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text=T.btn_back, callback_data=f"sup:t:reply_cancel:{ticket_id}")
+    return b.as_markup()
+
+
+def kb_support_close_confirm(ticket_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=T.btn_support_close_confirm,
+        callback_data=f"sup:t:close_yes:{ticket_id}",
+    )
+    b.button(
+        text=T.btn_support_close_cancel,
+        callback_data=f"sup:t:{ticket_id}",
+    )
+    b.adjust(1, 1)
     return b.as_markup()
 
 
 def kb_support_created() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=T.btn_support_my, callback_data="sup:my")
-    b.button(text="◀ В меню", callback_data="nav:menu")
+    b.button(text=T.btn_back_menu, callback_data="nav:menu")
     b.adjust(1, 1)
     return b.as_markup()
 
@@ -73,7 +95,7 @@ def _status_dot(status: str) -> str:
 def kb_my_tickets(tickets: list[SupportTicket]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tickets:
-        subject = t.subject if len(t.subject) <= 32 else t.subject[:31] + "…"
+        subject = button_text(t.subject, limit=32)
         b.button(
             text=T.support_ticket_row.format(
                 status=_status_dot(t.status), id=t.id, subject=subject
@@ -133,12 +155,12 @@ def kb_admin_sup_list(
 ) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tickets:
-        subject = t.subject if len(t.subject) <= 24 else t.subject[:23] + "…"
+        subject = button_text(t.subject, limit=24)
         b.button(
             text=T.admin_sup_row.format(
                 status=_admin_status_dot(t.status),
                 id=t.id,
-                user=user_labels.get(t.user_id, "?"),
+                user=button_text(user_labels.get(t.user_id, "?"), limit=16),
                 subject=subject,
             ),
             callback_data=f"adm:sup:open:{t.id}",
@@ -147,7 +169,7 @@ def kb_admin_sup_list(
         b.button(text=T.btn_admin_sup_open, callback_data="adm:sup")
     else:
         b.button(text=T.btn_admin_sup_archive, callback_data="adm:sup:arch")
-    b.button(text="◀ В админку", callback_data="adm:root")
+    b.button(text=T.btn_back_admin, callback_data="adm:root")
     b.adjust(*([1] * len(tickets)), 2)
     return b.as_markup()
 
@@ -160,7 +182,27 @@ def kb_admin_sup_card(ticket: SupportTicket, *, from_archive: bool = False) -> I
         b.button(text=T.btn_admin_sup_close, callback_data=f"adm:sup:close:{ticket.id}")
         rows.append(2)
     back_cb = "adm:sup:arch" if from_archive else "adm:sup"
-    b.button(text="◀ К списку", callback_data=back_cb)
+    b.button(text="‹ К списку", callback_data=back_cb)
     rows.append(1)
     b.adjust(*rows)
+    return b.as_markup()
+
+
+def kb_admin_sup_reply_cancel(ticket_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text=T.btn_back, callback_data=f"adm:sup:reply_cancel:{ticket_id}")
+    return b.as_markup()
+
+
+def kb_admin_sup_close_confirm(ticket_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=T.btn_support_close_confirm,
+        callback_data=f"adm:sup:close_yes:{ticket_id}",
+    )
+    b.button(
+        text=T.btn_support_close_cancel,
+        callback_data=f"adm:sup:open:{ticket_id}",
+    )
+    b.adjust(1, 1)
     return b.as_markup()

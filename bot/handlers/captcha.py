@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from utils.telegram import ignore_unchanged
+
 from contextlib import suppress
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +58,7 @@ async def cb_captcha_choice(
         )
         await callback.answer(T.captcha_ok)
         # удаляем сообщение с капчей — оставляем чат чистым
-        with suppress(Exception):
+        with suppress(TelegramBadRequest):
             await callback.message.delete()
         user = await user_repo.get_by_tg_id(callback.from_user.id)
         if user is None:
@@ -70,12 +73,22 @@ async def cb_captcha_choice(
         )
         await state.clear()
         await callback.answer(T.captcha_failed, show_alert=True)
-        with suppress(Exception):
+        with ignore_unchanged():
             await callback.message.edit_reply_markup(reply_markup=None)
         return
 
-    await state.update_data(captcha_attempts_left=attempts_left)
     await callback.answer(T.captcha_wrong.format(left=attempts_left), show_alert=True)
-    with suppress(Exception):
+    with suppress(TelegramBadRequest):
         await callback.message.delete()
-    await show_captcha(callback.message, state, total_steps=total_steps)
+    await show_captcha(
+        callback.message,
+        state,
+        total_steps=total_steps,
+        attempts_left=attempts_left,
+    )
+
+
+@router.callback_query(F.data.startswith("cap:"))
+async def cb_captcha_stale(callback: CallbackQuery) -> None:
+    """Give feedback for an old captcha button after the FSM state has changed."""
+    await callback.answer(T.stale_screen_alert, show_alert=True)

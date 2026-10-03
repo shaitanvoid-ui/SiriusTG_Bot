@@ -64,13 +64,22 @@ async def show_terms(message: Message, state: FSMContext, *, total_steps: int) -
     await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
 
 
-async def show_captcha(message: Message, state: FSMContext, *, total_steps: int) -> None:
+async def show_captcha(
+    message: Message,
+    state: FSMContext,
+    *,
+    total_steps: int,
+    attempts_left: int = 3,
+) -> None:
+    """Показывает новую CAPTCHA, сохраняя оставшийся лимит попыток."""
+    if attempts_left < 1:
+        raise ValueError("attempts_left must be positive")
     task = generate_task()
     await state.set_state(OnboardingStates.awaiting_captcha)
     await state.update_data(
         captcha_token=task.token,
         captcha_answer=task.answer,
-        captcha_attempts_left=3,
+        captcha_attempts_left=attempts_left,
         total_steps=total_steps,
     )
     png = render_captcha_image(task.on_image)
@@ -150,7 +159,9 @@ async def finalize_subs_passed(
     """
     if user.subs_passed_at is not None:
         return None
-    await UserRepo(session).mark_subs_passed(user.tg_id)
+    if not await UserRepo(session).mark_subs_passed(user.tg_id):
+        return None
+    await session.refresh(user)
     await ActionLogRepo(session).log(
         user_tg_id=user.tg_id, action="subs_passed"
     )

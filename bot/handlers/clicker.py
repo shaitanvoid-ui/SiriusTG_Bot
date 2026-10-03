@@ -7,7 +7,8 @@ Edit-in-place: одна и та же «карточка» обновляется
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
@@ -24,7 +25,7 @@ from services.clicker import (
     ClickerView,
 )
 from services.settings import SettingsService
-from utils.ui import human_duration, progress_bar, stars
+from utils.ui import html_text, human_duration, progress_bar, stars
 
 
 router = Router(name="clicker")
@@ -41,8 +42,8 @@ def _cooldown_line(view: ClickerView) -> str:
 def _render_card(view: ClickerView) -> str:
     bar = progress_bar(view.clicks, view.daily_limit)
     return T.clicker_caption.format(
-        level_emoji=view.level.emoji,
-        level_name=view.level.name,
+        level_emoji=html_text(view.level.emoji),
+        level_name=html_text(view.level.name),
         reward_per_click=stars(view.reward_per_click),
         clicks=view.clicks,
         daily_limit=view.daily_limit,
@@ -74,7 +75,7 @@ async def _send_card(callback: CallbackQuery, view: ClickerView) -> None:
     else:
         text = _render_card(view)
         kb = kb_clicker(can_click=can_click, cooldown_ms_left=view.cooldown_ms_left)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb)
 
 
@@ -119,6 +120,10 @@ async def cb_tap(
     svc = ClickerService(session, SettingsService(session))
     result = await svc.click(user)
 
+    if result.status == ClickStatus.BLOCKED:
+        await callback.answer(T.reward_restricted, show_alert=True)
+        return
+
     if result.status == ClickStatus.TOO_FAST:
         # обновим карточку — таймер на кнопке/в тексте подтянется
         view = await svc.get_view(user)
@@ -139,7 +144,7 @@ async def cb_tap(
     if result.status == ClickStatus.NEED_CAPTCHA:
         await callback.answer(T.clicker_captcha_required_alert, show_alert=False)
         if callback.message is not None and result.captcha_token:
-            with suppress(Exception):
+            with ignore_unchanged():
                 await callback.message.edit_text(
                     _render_captcha(result.captcha_hint),
                     reply_markup=kb_clicker_captcha(
@@ -151,7 +156,7 @@ async def cb_tap(
     # OK
     if result.captcha_required and result.captcha_token:
         if callback.message is not None:
-            with suppress(Exception):
+            with ignore_unchanged():
                 await callback.message.edit_text(
                     _render_captcha(result.captcha_hint),
                     reply_markup=kb_clicker_captcha(
@@ -219,7 +224,7 @@ async def cb_captcha_choice(
 
     # WRONG — обновим капчу
     if res.captcha_token:
-        with suppress(Exception):
+        with ignore_unchanged():
             await callback.message.edit_text(
                 _render_captcha(res.captcha_hint, wrong=True),
                 reply_markup=kb_clicker_captcha(res.captcha_token, res.captcha_choices),

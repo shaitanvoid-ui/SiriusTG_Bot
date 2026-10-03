@@ -52,6 +52,7 @@ async def run_daily_digest(bot: Bot) -> None:
         log.info("daily_digest_sent")
     except TelegramAPIError:
         log.exception("daily_digest_send_failed")
+        raise
 
 
 def register_jobs(scheduler: AsyncIOScheduler, bot: Bot, *, hour_msk: int) -> None:

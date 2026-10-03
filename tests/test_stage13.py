@@ -48,6 +48,23 @@ async def test_make_backup_file_is_consistent_copy(tmp_path):
         os.remove(dst)
 
 
+async def test_make_backup_file_removes_partial_copy(tmp_path, monkeypatch):
+    src = _make_src_db(tmp_path)
+
+    def fail_copy(_src: str, _dst: str) -> None:
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(backup_mod, "_copy_sqlite", fail_copy)
+    try:
+        await backup_mod.make_backup_file(src, temp_dir=str(tmp_path))
+    except OSError:
+        pass
+    else:
+        raise AssertionError("backup failure was not propagated")
+
+    assert list(tmp_path.glob("bot_backup_*.db")) == []
+
+
 async def test_run_db_backup_sends_document(tmp_path, session, session_factory, monkeypatch):
     src = _make_src_db(tmp_path)
     monkeypatch.setattr(backup_mod, "SessionLocal", session_factory)
@@ -60,7 +77,7 @@ async def test_run_db_backup_sends_document(tmp_path, session, session_factory, 
     assert len(bot.documents) == 1
     chat_id, filename, caption = bot.documents[0]
     assert chat_id == -100123
-    assert filename.startswith("bot_") and filename.endswith(".db")
+    assert filename.startswith("bot_") and filename.endswith(".db.fernet")
     assert "Бэкап" in caption
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import UserTaskCompletion
 from db.repositories.base import BaseRepo
+from db.money import to_units
 
 
 class UserTaskCompletionRepo(BaseRepo):
@@ -33,10 +35,13 @@ class UserTaskCompletionRepo(BaseRepo):
         )
         return list(res.scalars().all())
 
-    async def delete(self, completion_id: int) -> None:
-        await self.session.execute(
-            delete(UserTaskCompletion).where(UserTaskCompletion.id == completion_id)
+    async def delete(self, completion_id: int) -> bool:
+        result = await self.session.execute(
+            delete(UserTaskCompletion)
+            .where(UserTaskCompletion.id == completion_id)
+            .returning(UserTaskCompletion.id)
         )
+        return result.scalar_one_or_none() is not None
 
     async def count_for_user(self, user_id: int) -> int:
         """Сколько опц. заданий выполнил юзер. Для достижений."""
@@ -65,8 +70,24 @@ class UserTaskCompletionRepo(BaseRepo):
         row = UserTaskCompletion(
             user_id=user_id,
             sponsor_id=sponsor_id,
-            reward=reward,
+            reward_units=to_units(reward),
         )
         self.session.add(row)
         await self.session.flush()
         return row
+
+    async def create_if_absent(
+        self, *, user_id: int, sponsor_id: int, reward: float
+    ) -> UserTaskCompletion | None:
+        stmt = (
+            sqlite_insert(UserTaskCompletion)
+            .values(user_id=user_id, sponsor_id=sponsor_id, reward_units=to_units(reward))
+            .on_conflict_do_nothing(index_elements=["user_id", "sponsor_id"])
+            .returning(UserTaskCompletion.id)
+        )
+        completion_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        return (
+            await self.session.get(UserTaskCompletion, completion_id)
+            if completion_id is not None
+            else None
+        )

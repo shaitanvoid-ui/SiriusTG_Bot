@@ -12,10 +12,15 @@ from db.repositories.review import ReviewRepo
 from db.repositories.stop_word import StopWordRepo
 from db.repositories.user import UserRepo
 from db.repositories.support import TicketRepo
-from db.models import Review, TicketAuthor, User, ReviewStatus
+from db.models import Review, TicketAuthor, User
+from db.money import from_units, settlement_units
 from locales.ru import T
 from services.notifications import NotificationService
 from services.settings import SettingsService
+from core.logger import get_logger
+
+
+log = get_logger(__name__)
 
 
 class ReviewService:
@@ -39,7 +44,7 @@ class ReviewService:
         if user.confirmed_ref_count < min_refs:
             return False, f"Нужно минимум {min_refs} подтверждённых рефералов"
 
-        if user.is_shadow_banned:
+        if not await UserRepo(self.session).rewards_allowed(user.id):
             return False, "Доступ временно ограничен"
 
         if await self.repo.has_recent_review(user.id, cooldown_days):
@@ -94,13 +99,18 @@ class ReviewService:
         if not ok:
             return None, reason
 
-        review = await self.repo.create(
+        cooldown_days = await SettingsService(self.session).get_int(
+            "review.antispam_cooldown_days", 7
+        )
+        review = await self.repo.create_if_no_recent(
             user_id=user.id,
             rating=rating,
             text=text,
             is_anonymous=is_anonymous,
+            cooldown_days=cooldown_days,
         )
-        await self.session.commit()
+        if review is None:
+            return None, f"Следующий отзыв можно оставить через {cooldown_days} дней"
         return review, ""
 
     async def moderate(
@@ -110,30 +120,33 @@ class ReviewService:
         note: str | None = None,
     ) -> tuple[Review | None, str]:
         """Модерация отзыва. Возвращает (review, action_key)."""
-        review = await self.session.get(Review, review_id)
-        if not review or review.status != ReviewStatus.PENDING.value:
-            return None, "pending"
-
         user_repo = UserRepo(self.session)
-        stars = "⭐" * review.rating
-        stars_line = f"{stars} {review.rating}/5"
 
         if action == "approve":
-            await self.repo.approve(review_id)
+            candidate = await self.session.get(Review, review_id)
+            if candidate is not None and not await user_repo.lock_rewards_allowed(candidate.user_id):
+                return None, "blocked"
+            review = await self.repo.approve(review_id)
+            if review is None:
+                return None, "pending"
             s = SettingsService(self.session)
-            reward = await s.get_float("review.reward", 1.0)
+            reward = float(from_units(settlement_units(await s.get_float("review.reward", 1.0))))
             if reward > 0:
-                await user_repo.add_balance(review.user_id, reward)
-            await self.session.commit()
+                await user_repo.add_balance(review.user_id, reward, reason="review_reward")
             return review, "approved"
 
         elif action == "reject":
-            await self.repo.reject(review_id, note)
-            await self.session.commit()
+            review = await self.repo.reject(review_id, note)
+            if review is None:
+                return None, "pending"
             return review, "rejected"
 
         elif action == "convert":
-            await self.repo.convert_to_ticket(review_id, note or "")
+            review = await self.repo.convert_to_ticket(review_id, note or "")
+            if review is None:
+                return None, "pending"
+            stars = "⭐" * review.rating
+            stars_line = f"{stars} {review.rating}/5"
             ticket_repo = TicketRepo(self.session)
             ticket = await ticket_repo.create(
                 user_id=review.user_id,
@@ -143,7 +156,6 @@ class ReviewService:
             )
             # первое сообщение треда — чтобы переписка рендерилась (Этап 11)
             await ticket_repo.add_message(ticket, TicketAuthor.USER, ticket.text)
-            await self.session.commit()
             return review, "converted"
 
         return None, "pending"
@@ -172,8 +184,13 @@ class ReviewService:
                     author=html.quote(author),
                 ),
             )
-        except (TelegramAPIError, ValueError):
-            pass
+            await self.repo.mark_published(review.id)
+        except (TelegramAPIError, ValueError) as exc:
+            log.warning(
+                "review_publish_failed",
+                review_id=review.id,
+                error=str(exc),
+            )
 
     async def notify_user_approved(self, bot: Bot, review: Review, reward: float) -> None:
         """DM юзеру: отзыв опубликован (+ награда, если была)."""

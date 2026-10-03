@@ -7,7 +7,8 @@ Edit-in-place: одна карточка обновляется при полу�
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery
@@ -72,7 +73,7 @@ async def _send_card(
         return
     text = _render(view, link=link, tiers=tiers)
     kb = kb_bonus(can_claim=not view.claimed_today)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(text, reply_markup=kb)
 
 
@@ -135,6 +136,10 @@ async def cb_claim(
     result = await svc.claim(user, bio_checker=_checker)
     link = await build_referral_link(bot, user.tg_id)
     tiers = await svc.tiers()
+
+    if result.status == BonusStatus.BLOCKED:
+        await callback.answer(T.reward_restricted, show_alert=True)
+        return
 
     if result.status == BonusStatus.OK:
         view = await svc.get_view(user)

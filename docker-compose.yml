@@ -1,6 +1,8 @@
 services:
   bot:
-    build: .
+    build:
+      context: .
+      target: runtime
     container_name: sirius_bot
     restart: unless-stopped
     env_file: .env
@@ -9,5 +11,5 @@ services:
       - ./sessions:/app/sessions
       - ./logs:/app/logs
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${HEALTH_PORT:-8080}:${HEALTH_PORT:-8080}"
     stop_grace_period: 30s

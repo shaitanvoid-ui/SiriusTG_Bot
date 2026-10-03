@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import suppress
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from services.reviews import ReviewService
 from services.settings import SettingsService
 from locales.ru import T
 from utils.tz import fmt_dt
+from utils.ui import html_text
 
 
 router = Router(name="admin_reviews")
@@ -34,9 +36,11 @@ async def cb_reviews_list(callback: CallbackQuery, session: AsyncSession) -> Non
     pending = await repo.get_pending(limit=50)
 
     if not pending:
-        text = "💝  <b>ОТЗЫВЫ</b>\n━━━━━━━━━━━━━━━━━━━\n\nОчередь модерации пуста."
-        with suppress(Exception):
-            await callback.message.edit_text(text, reply_markup=kb_reviews_list())
+        with suppress(TelegramAPIError):
+            await callback.message.edit_text(
+                T.admin_reviews_empty,
+                reply_markup=kb_reviews_list(),
+            )
         await callback.answer()
         return
 
@@ -45,7 +49,7 @@ async def cb_reviews_list(callback: CallbackQuery, session: AsyncSession) -> Non
     db_user = await user_repo.get_by_id(review.user_id)
     stars = "⭐" * review.rating
     user_info = (
-        f"@{db_user.username}" if db_user and db_user.username else
+        f"@{html_text(db_user.username)}" if db_user and db_user.username else
         f"<code>{db_user.tg_id}</code>" if db_user else "<code>?</code>"
     )
     text = T.review_mod_card.format(
@@ -54,9 +58,9 @@ async def cb_reviews_list(callback: CallbackQuery, session: AsyncSession) -> Non
         rating_stars=f"{stars} {review.rating}/5",
         is_anon=T.review_mod_anonymous if review.is_anonymous else T.review_mod_public,
         date=fmt_dt(review.created_at),
-        text=review.text[:300],
+        text=html_text(review.text[:300]),
     )
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             text,
             reply_markup=kb_review_mod_actions(review.id),
@@ -88,10 +92,10 @@ async def cb_review_approve(callback: CallbackQuery, bot: Bot, session: AsyncSes
     if settings.log_channel_id:
         await svc.notify_log(bot, review, action_key)
 
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         if callback.message:
             await callback.message.edit_text(
-                "✅ Отзыв опубликован.",
+                T.admin_review_approved,
                 reply_markup=kb_reviews_list(),
             )
     await callback.answer()
@@ -103,7 +107,7 @@ async def cb_review_reject_prompt(callback: CallbackQuery, state: FSMContext) ->
     await state.update_data(mod_review_id=review_id, mod_action="reject")
     await state.set_state(ReviewModStates.waiting_note)
     if callback.message:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
                 T.review_reject_confirm.format(id=review_id),
             )
@@ -116,7 +120,7 @@ async def cb_review_convert_prompt(callback: CallbackQuery, state: FSMContext) -
     await state.update_data(mod_review_id=review_id, mod_action="convert")
     await state.set_state(ReviewModStates.waiting_note)
     if callback.message:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await callback.message.edit_text(
                 T.review_convert_confirm.format(id=review_id),
             )
@@ -133,7 +137,7 @@ async def cb_review_mod_note(
     action = data.get("mod_action", "reject")
     if review_id is None:
         await state.clear()
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await message.answer(T.review_not_found, reply_markup=kb_reviews_list())
         return
 
@@ -141,7 +145,7 @@ async def cb_review_mod_note(
     review, action_key = await svc.moderate(review_id, action, note)
     if review is None:
         await state.clear()
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await message.answer(T.review_already_done, reply_markup=kb_reviews_list())
         return
 
@@ -149,9 +153,9 @@ async def cb_review_mod_note(
         await svc.notify_log(bot, review, action_key)
 
     if action == "convert":
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await message.answer(T.review_convert_done, reply_markup=kb_reviews_list())
     else:
-        with suppress(Exception):
+        with suppress(TelegramAPIError):
             await message.answer(T.review_reject_done, reply_markup=kb_reviews_list())
     await state.clear()

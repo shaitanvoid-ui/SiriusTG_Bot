@@ -24,6 +24,8 @@ log = get_logger(__name__)
 
 SUBJECT_MAX_LEN = 60
 THREAD_MSG_MAX_CHARS = 300
+THREAD_VISIBLE_MESSAGES = 8
+THREAD_RENDER_MAX_CHARS = 2_400
 
 
 def render_thread(messages: list[SupportMessage]) -> str:
@@ -32,8 +34,8 @@ def render_thread(messages: list[SupportMessage]) -> str:
 
     from locales.ru import T
 
-    lines = []
-    for msg in messages:
+    selected: list[str] = []
+    for msg in reversed(messages):
         text = msg.text.strip()
         if len(text) > THREAD_MSG_MAX_CHARS:
             text = text[: THREAD_MSG_MAX_CHARS - 1] + "…"
@@ -42,7 +44,19 @@ def render_thread(messages: list[SupportMessage]) -> str:
             if msg.author == TicketAuthor.ADMIN.value
             else T.support_thread_user_line
         )
-        lines.append(template.format(text=html.quote(text)))
+        line = template.format(text=html.quote(text))
+        extra = len(line) + (2 if selected else 0)
+        if selected and (
+            len(selected) >= THREAD_VISIBLE_MESSAGES
+            or sum(map(len, selected)) + 2 * (len(selected) - 1) + extra
+            > THREAD_RENDER_MAX_CHARS
+        ):
+            break
+        selected.append(line)
+    selected.reverse()
+    lines = selected
+    if len(selected) < len(messages):
+        lines.insert(0, T.support_thread_older_omitted)
     return "\n\n".join(lines)
 
 

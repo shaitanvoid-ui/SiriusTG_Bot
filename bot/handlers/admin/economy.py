@@ -12,16 +12,21 @@ from contextlib import suppress
 from typing import Any
 
 from aiogram import F, Router, html
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot.filters.admin import IsAdmin
+from core.config import settings
 from bot.keyboards.admin_panel import kb_eco_cancel, kb_eco_groups, kb_eco_keys
 from bot.states.admin import EcoEditStates
 from db.repositories.action_log import ActionLogRepo
 from locales.ru import T
 from services.settings import DEFAULTS, SettingsService
+from services.settings_validation import validate_setting_change
+from services.scheduler_runtime import apply_scheduler_setting
 
 
 router = Router(name="admin_economy")
@@ -94,7 +99,7 @@ async def cb_root(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None:
         await callback.answer()
         return
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_eco_root, reply_markup=kb_eco_groups(sorted(eco_groups()))
         )
@@ -118,7 +123,7 @@ async def cb_group(callback: CallbackQuery, state: FSMContext, session: AsyncSes
         value = await svc.get(k, DEFAULTS[k][0])
         rows.append(T.admin_eco_row.format(key=k, value=_short(value)))
     text = T.admin_eco_group.format(group=group, rows="\n".join(rows))
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(text, reply_markup=kb_eco_keys(group, keys))
     await callback.answer()
 
@@ -132,12 +137,15 @@ async def cb_key(callback: CallbackQuery, state: FSMContext, session: AsyncSessi
     if key not in DEFAULTS:
         await callback.answer()
         return
+    if key.startswith("gifts.") and callback.from_user.id != settings.owner_id:
+        await callback.answer(T.admin_gift_owner_only, show_alert=True)
+        return
     svc = SettingsService(session)
     value = await svc.get(key, DEFAULTS[key][0])
     group = key.split(".", 1)[0]
     await state.set_state(EcoEditStates.waiting_value)
     await state.update_data(eco_key=key)
-    with suppress(Exception):
+    with suppress(TelegramAPIError):
         await callback.message.edit_text(
             T.admin_eco_edit_prompt.format(
                 key=key,
@@ -151,11 +159,20 @@ async def cb_key(callback: CallbackQuery, state: FSMContext, session: AsyncSessi
 
 
 @router.message(EcoEditStates.waiting_value, F.text)
-async def msg_value(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def msg_value(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    scheduler: AsyncIOScheduler | None = None,
+) -> None:
     data = await state.get_data()
     key = data.get("eco_key", "")
     if key not in DEFAULTS:
         await state.clear()
+        return
+    if key.startswith("gifts.") and (message.from_user is None or message.from_user.id != settings.owner_id):
+        await state.clear()
+        await message.answer(T.admin_gift_owner_only)
         return
     svc = SettingsService(session)
     current = await svc.get(key, DEFAULTS[key][0])
@@ -163,7 +180,14 @@ async def msg_value(message: Message, state: FSMContext, session: AsyncSession) 
     if not ok:
         await message.answer(T.admin_eco_invalid.format(type=_type_name(current)))
         return
+    validation_error = await validate_setting_change(key, new_value, svc)
+    if validation_error:
+        await message.answer(
+            T.admin_eco_validation_error.format(error=html.quote(validation_error))
+        )
+        return
     await svc.set(key, new_value, DEFAULTS[key][1])
+    apply_scheduler_setting(scheduler, key, new_value)
     await ActionLogRepo(session).log(
         user_tg_id=message.from_user.id if message.from_user else None,
         action="admin_setting_changed",

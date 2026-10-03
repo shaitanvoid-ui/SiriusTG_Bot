@@ -53,7 +53,7 @@ async def run_support_autoclose(bot: Bot) -> None:
         except Exception:
             await session.rollback()
             log.exception("support_autoclose_failed")
-            return
+            raise
 
     # уведомления — после успешного коммита
     for tg_id, ticket_id in notify:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+from utils.telegram import ignore_unchanged
+
 
 from aiogram import F, Router, html
 from aiogram.types import CallbackQuery
@@ -17,7 +18,7 @@ from services.partner import PartnerService
 from services.referral import ReferralService
 from services.settings import SettingsService
 from utils.tz import fmt_date
-from utils.ui import progress_bar, stars
+from utils.ui import count_ru, html_text, progress_bar, stars
 
 
 router = Router(name="profile")
@@ -42,8 +43,8 @@ async def _render_caption(session: AsyncSession, user: User) -> str:
         progress_text = T.menu_progress_max
     else:
         progress_text = T.menu_progress_to_next.format(
-            next_name=info.next_name,
-            to_next=info.to_next,
+            next_name=html_text(info.next_name or ""),
+            to_next_text=count_ru(info.to_next, "реферал", "реферала", "рефералов"),
         )
 
     if user.username:
@@ -64,8 +65,8 @@ async def _render_caption(session: AsyncSession, user: User) -> str:
         tg_id=user.tg_id,
         balance=stars(user.balance),
         debt_part=debt_part,
-        level_emoji=info.emoji,
-        level_name=info.name,
+        level_emoji=html_text(info.emoji),
+        level_name=html_text(info.name),
         progress_bar=bar,
         progress_text=progress_text,
         ref_total=stats["total"],
@@ -91,7 +92,7 @@ async def cb_open_profile(
         return
     caption = await _render_caption(session, user)
     partner = await PartnerService(session, SettingsService(session)).get_for_user(user)
-    with suppress(Exception):
+    with ignore_unchanged():
         await callback.message.edit_text(
             caption, reply_markup=kb_profile(is_partner=partner is not None)
         )
