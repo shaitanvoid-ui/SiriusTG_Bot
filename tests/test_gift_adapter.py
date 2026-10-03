@@ -48,6 +48,8 @@ class Client:
         self.can_send = True
         self.authorized = True
         self.disconnected = False
+        self.dialogs = []
+        self.dialog_queries = []
 
     async def disconnect(self):
         self.disconnected = True
@@ -62,6 +64,10 @@ class Client:
         if isinstance(candidate, int):
             raise ValueError("uncached recipient")
         return self.recipient
+
+    async def get_dialogs(self, *, limit):
+        self.dialog_queries.append(limit)
+        return self.dialogs
 
     async def __call__(self, request):
         self.requests.append(request)
@@ -143,6 +149,38 @@ async def test_no_username_or_access_hash_never_fabricates_peer(context):
     client.recipient = types.InputPeerUser(123, 0)
     with pytest.raises(RecipientUnavailable, match="recipient_unresolved"):
         await adapter.resolve_recipient(123, "recipient")
+
+
+async def test_no_username_reloads_verified_recent_dialog_after_restart(context):
+    client, adapter = context
+    client.dialogs = [SimpleNamespace(input_entity=types.InputPeerUser(999, 111)),
+                      SimpleNamespace(input_entity=types.InputPeerUser(123, 789))]
+    first = await adapter.resolve_recipient(123, None)
+    restarted = TelethonGiftAdapter(client_provider=adapter._client_provider)
+    second = await restarted.resolve_recipient(123, None)
+    assert first.peer.user_id == second.peer.user_id == 123
+    assert first.peer.access_hash == second.peer.access_hash == 789
+    assert client.dialog_queries == [100, 100]
+    assert not client.requests  # no payment request
+
+
+async def test_dialog_resolution_rejects_wrong_type_id_and_empty_hash(context):
+    client, adapter = context
+    client.dialogs = [SimpleNamespace(input_entity=types.InputPeerUser(124, 789)),
+                      SimpleNamespace(input_entity=types.InputPeerUser(123, 0)),
+                      SimpleNamespace(input_entity=types.InputPeerChannel(123, 456))]
+    with pytest.raises(RecipientUnavailable, match="recipient_unresolved"):
+        await adapter.resolve_recipient(123, None)
+
+
+async def test_dialog_read_floodwait_is_safe_without_purchase(context):
+    client, adapter = context
+    async def flood(*, limit):
+        raise errors.FloodWaitError(None, capture=60)
+    client.get_dialogs = flood
+    with pytest.raises(FloodWait):
+        await adapter.resolve_recipient(123, None)
+    assert not client.requests
 
 
 @pytest.mark.parametrize("values,code", [

@@ -299,6 +299,19 @@ class TelethonGiftAdapter:
             if not peer.access_hash:
                 continue
             return Recipient(tg_id, username, peer)
+        # StringSession deliberately does not persist entity/access-hash caches.
+        # A recent private message gives a real dialog that can be reloaded after
+        # restart. Read only a bounded recent page, and never guess a hash/name.
+        try:
+            dialogs = await asyncio.wait_for(client.get_dialogs(limit=100), self._timeout)
+        except _AUTH_ERRORS:
+            raise SenderUnavailable("not_authorized") from None
+        except TELETHON_OPERATION_ERRORS as exc:
+            raise _classified_failure(exc, paying=False) from None
+        for dialog in dialogs:
+            peer = getattr(dialog, "input_entity", None)
+            if isinstance(peer, types.InputPeerUser) and peer.user_id == tg_id and peer.access_hash:
+                return Recipient(tg_id, username, peer)
         raise RecipientUnavailable("recipient_unresolved")
 
     async def _preflight(self, gift_id: int, expected_stars: int) -> tuple[TelegramClient, SenderStatus]:
