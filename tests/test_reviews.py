@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -17,6 +19,7 @@ from sqlalchemy import select
 from bot.handlers.reviews import cb_review_anonymity
 from bot.keyboards.reviews import (
     kb_review_anonymity,
+    kb_review_confirm,
     kb_review_intro,
     kb_review_rating,
     kb_review_text_step,
@@ -63,6 +66,33 @@ async def test_create_review_antispam_min_refs(session):
     user = await create_user(session, tg_id=999000902, confirmed_ref_count=0)
     r, err = await ReviewService(session).create_review(user, 5, GOOD_TEXT, False)
     assert r is None and "рефер" in err.lower()
+
+
+async def test_parallel_review_creation_respects_cooldown(session, session_factory):
+    user = await create_user(session, tg_id=999000918, confirmed_ref_count=3)
+    user_id = user.id
+    await session.commit()
+
+    async def create_once():
+        async with session_factory() as worker_session:
+            worker_user = await UserRepo(worker_session).get_by_id(user_id)
+            assert worker_user is not None
+            result = await ReviewService(worker_session).create_review(
+                worker_user,
+                5,
+                GOOD_TEXT,
+                False,
+            )
+            await worker_session.commit()
+            return result
+
+    results = await asyncio.gather(create_once(), create_once())
+    assert sum(review is not None for review, _ in results) == 1
+    assert sum(bool(error) for review, error in results if review is None) == 1
+
+    async with session_factory() as check_session:
+        latest = await ReviewRepo(check_session).get_by_user(user_id)
+        assert latest is not None
 
 
 # ---------- модерация ----------
@@ -143,9 +173,11 @@ def test_review_keyboards_wired():
     assert "rev:start" in _cb_datas(kb_review_intro())
     rating = _cb_datas(kb_review_rating(3))
     assert "rev:star:1" in rating and "rev:rating_next" in rating and "rev:cancel" in rating
-    assert _cb_datas(kb_review_text_step()) == ["rev:cancel"]
+    assert _cb_datas(kb_review_text_step()) == ["rev:back:rating", "rev:cancel"]
     anon = _cb_datas(kb_review_anonymity())
-    assert "rev:anon_yes" in anon and "rev:anon_no" in anon
+    assert {"rev:anon_yes", "rev:anon_no", "rev:back:text", "rev:cancel"} <= set(anon)
+    confirm = _cb_datas(kb_review_confirm())
+    assert {"rev:confirm", "rev:back:anon", "rev:cancel"} <= set(confirm)
 
 
 # ---------- маппинг анонимности (регрессия: инверсная логика) ----------
