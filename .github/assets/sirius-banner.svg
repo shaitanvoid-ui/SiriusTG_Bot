@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="400" viewBox="0 0 1400 400" role="img" aria-labelledby="title desc">
+  <title id="title">SIRIUS — Native Telegram Stars Hub</title>
+  <desc id="desc">Награды и обычные Telegram-подарки. Нативный интерфейс, точный учёт и управляемая выдача.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#0b1324"/><stop offset="1" stop-color="#101a30"/></linearGradient>
+    <radialGradient id="light"><stop stop-color="#3c7bbf" stop-opacity=".3"/><stop offset="1" stop-color="#3c7bbf" stop-opacity="0"/></radialGradient>
+    <linearGradient id="accent"><stop stop-color="#b9dcff"/><stop offset="1" stop-color="#779ff5"/></linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#adcfff" stroke-opacity=".035"/></pattern>
+  </defs>
+  <rect width="1400" height="400" rx="24" fill="url(#bg)"/>
+  <rect width="1400" height="400" rx="24" fill="url(#grid)"/>
+  <ellipse cx="1120" cy="175" rx="330" ry="280" fill="url(#light)"/>
+  <g fill="none" stroke="#9dc7fc">
+    <ellipse cx="1110" cy="197" rx="200" ry="74" transform="rotate(-34 1110 197)" stroke-opacity=".38"/>
+    <ellipse cx="1110" cy="197" rx="164" ry="114" transform="rotate(35 1110 197)" stroke-opacity=".16"/>
+    <circle cx="1110" cy="197" r="132" stroke-opacity=".1"/>
+  </g>
+  <path d="M1110 111l18 67 67 19-67 19-18 67-19-67-67-19 67-19z" fill="url(#accent)"/>
+  <circle cx="1276" cy="85" r="5" fill="#b9dcff"/>
+  <circle cx="947" cy="309" r="4" fill="#87ade7"/>
+  <path d="M1278 283v16m-8-8h16" stroke="#7196c6" stroke-width="2"/>
+  <text x="72" y="74" fill="#8da4c5" font-family="Segoe UI,Arial,sans-serif" font-size="14" letter-spacing="4">NATIVE TELEGRAM · STARS HUB</text>
+  <text x="67" y="190" fill="#f1f6ff" font-family="Segoe UI,Arial,sans-serif" font-size="104" font-weight="650" letter-spacing="-5">SIRIUS</text>
+  <text x="72" y="245" fill="#d2dff1" font-family="Segoe UI,Arial,sans-serif" font-size="27">Награды и обычные Telegram-подарки.</text>
+  <text x="72" y="285" fill="#90a6c5" font-family="Segoe UI,Arial,sans-serif" font-size="19">Нативные карточки. Точный учёт. Управляемая выдача.</text>
+  <path d="M72 330h40" stroke="#93b9f0" stroke-width="2"/>
+  <text x="130" y="336" fill="#8fa7c9" font-family="Segoe UI,Arial,sans-serif" font-size="13" letter-spacing="2">AIOGRAM · TELETHON · SQLITE · DOCKER</text>
+  <rect x=".5" y=".5" width="1399" height="399" rx="24" fill="none" stroke="#91baf3" stroke-opacity=".12"/>
+</svg>

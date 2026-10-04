@@ -2,7 +2,7 @@
 
 <sub>T E L E G R A M &nbsp; · &nbsp; S T A R S &nbsp; H U B</sub>
 
-# SIRIUS
+![SIRIUS — награды и обычные Telegram-подарки](.github/assets/sirius-banner.svg)
 
 **Персональный маршрут, внутренние награды и Telegram-подарки.**
 
@@ -13,10 +13,12 @@
 ![Python](https://img.shields.io/badge/Python-3.14.7-24292f?style=flat-square&logo=python&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-3.31.0-24292f?style=flat-square&logo=telegram&logoColor=white)
 ![Telethon](https://img.shields.io/badge/Telethon-1.45.0-24292f?style=flat-square)
+![Локальные тесты](https://img.shields.io/badge/local_tests-465_passed-25765c?style=flat-square)
+[![CI](https://github.com/shaitanvoid-ui/SiriusTG_Bot/actions/workflows/ci.yml/badge.svg)](https://github.com/shaitanvoid-ui/SiriusTG_Bot/actions/workflows/ci.yml)
 
 <br>
 
-[Запуск](docs/DEPLOY.md) &nbsp; · &nbsp; [Выдача подарков](docs/STAGE7.md) &nbsp; · &nbsp; [Учёт средств](docs/EXACT_MONEY.md) &nbsp; · &nbsp; [Передача проекта](HANDOFF.md)
+[Запуск](docs/DEPLOY.md) &nbsp; · &nbsp; [Выдача подарков](docs/STAGE7.md) &nbsp; · &nbsp; [Учёт средств](docs/EXACT_MONEY.md) &nbsp; · &nbsp; [Приёмка](docs/FINAL_ACCEPTANCE.md) &nbsp; · &nbsp; [Антифрод](docs/STAGE12.md)
 
 </div>
 
@@ -48,6 +50,10 @@ Stars-подарков в одном Telegram-боте. Пользователь
 
 Интерфейс использует текст и inline-кнопки. Оформление зависит от Telegram-клиента
 и его темы; при известном отсутствии Rich API предусмотрен HTML-режим.
+
+Личные карточки доступны только в личном чате пользователя. Партнёрская
+комиссия начисляется за первое выполнение кампании конкретным пользователем
+и не растёт от повторных подписок.
 
 ## Подарок: от выбора до подтверждения
 
@@ -229,13 +235,13 @@ Stars-баланс. Оплату включает владелец после н
 
 ## Проверки и границы готовности
 
-Проверенный срез **03.10.2026**; подробные результаты — в
-[STAGE7.md](docs/STAGE7.md).
+Проверенный срез **04.10.2026**; итоговые результаты — в
+[FINAL_ACCEPTANCE.md](docs/FINAL_ACCEPTANCE.md).
 
 | Проверка | Подтверждённый результат |
 |---|---|
-| Полный suite локального дерева | **377 passed** |
-| Отдельный чистый Git tree `dc4bf02` | **279 passed** |
+| Полный suite рабочего кода | **465 passed** |
+| Чистый Git-снимок `8c422b2` | **465 passed**; отдельно от локальных прототипов |
 | Миграции на изолированной копии | `0013 → 0015 → 0013 → 0015`; исходные значения сохранены, `integrity=ok`, FK-ошибок нет |
 | Сборка и статические проверки | Runtime build, `pip check`, `compileall`, Ruff E9/F401/F841 для этапа 7, Compose config и `git diff --check` пройдены |
 | Чтение Telegram | Авторизация отправителя подтверждена; каталог **151** подарок, **11** обычных доступны по текущему адаптеру |
@@ -251,18 +257,29 @@ docker compose -f docker-compose.test.yml run --rm test
 
 **Реальные платные выдачи и отображение карточек в Telegram-клиентах ещё не
 проверялись.** Каталог и чтение аккаунта не заменяют платную приёмку. Реализован
-обычный Stars-процесс; resale, TON и аукционы в него не входят. Полный этап 12
-с риск-скорингом, миссии и сезоны остаются отдельной будущей работой.
+обычный Stars-процесс; resale, TON и аукционы в него не входят. Этап 12
+с сохраняемым лимитом, объяснимым скорингом и owner-аудитом реализован. Миссии и
+сезоны остаются отдельной будущей работой.
+
+## Работа над проектом
+
+[CI](https://github.com/shaitanvoid-ui/SiriusTG_Bot/actions/workflows/ci.yml)
+проверяет изолированный suite и production image.
+[Правила разработки](.github/CONTRIBUTING.md) описывают финансовые инварианты,
+тестовую среду и требования к изменениям.
 
 ## Документация
 
 | Документ | Когда открыть |
 |---|---|
+| [Итоговая приёмка](docs/FINAL_ACCEPTANCE.md) | Код, исправления, проверки, запуск и ограничения |
+| [Продукт и экономика](docs/PROJECT_REPORT.md) | Все функции, объём кода, оценка и сценарии дохода |
+| [Антифрод](docs/STAGE12.md) | Сигналы, persistent limiter, ловушки и owner-пересмотр |
 | [Развёртывание и эксплуатация](docs/DEPLOY.md) | Первый запуск, обновление, мониторинг и восстановление |
 | [Выдача подарков · этап 7](docs/STAGE7.md) | Очередь, статусы, неизвестные оплаты, бюджет и платная приёмка |
 | [Точный учёт средств](docs/EXACT_MONEY.md) | Целые доли, округление, долги, резервы, журнал и защита отката |
 | [Модернизация интерфейса](docs/MODERNIZATION.md) | Rich Messages, «Мой день», напоминания и проверки 01.10.2026 |
-| [Передача проекта](HANDOFF.md) | Текущий срез и история решений; актуальный блок находится в начале |
+| [Приёмка](docs/FINAL_ACCEPTANCE.md) &nbsp; · &nbsp; [Антифрод](docs/STAGE12.md) | Текущий срез и история решений; актуальный блок находится в начале |
 | [Исходная спецификация](docs/SPEC.md) | Первоначальные требования; текущий объём сверяется с этапом 7 |
 | [Промпт продолжения](docs/NEXT_CHAT_PROMPT.md) | Контекст следующего чата; исторические факты требуют актуализации |
 
