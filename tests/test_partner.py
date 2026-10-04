@@ -141,14 +141,16 @@ async def test_accrue_sponsor_share_with_override(session):
     )
     sponsor.partner_id = partner.id
 
-    amount = await svc.accrue_sponsor_share(sponsor, sponsor.reward)
+    first_user = await create_user(session, tg_id=999001028)
+    amount = await svc.accrue_sponsor_share(sponsor, sponsor.reward, task_user=first_user)
     assert amount == 1.0  # 50% от 2.0 (дефолт)
     await session.refresh(partner)
     assert partner.balance == 1.0
 
     await PartnerRepo(session).set_rates(partner.id, percent_sponsor=25.0)
     await session.refresh(partner)
-    amount = await svc.accrue_sponsor_share(sponsor, sponsor.reward)
+    second_user = await create_user(session, tg_id=999001029)
+    amount = await svc.accrue_sponsor_share(sponsor, sponsor.reward, task_user=second_user)
     assert amount == 0.5  # персональные 25%
 
 

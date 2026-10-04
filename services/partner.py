@@ -20,11 +20,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 
 from core.logger import get_logger
 from core.crypto import CryptoError, decrypt_field, encrypt_field
 from db.models import (
+    ActionLog,
     Partner,
     PartnerLink,
     PartnerPayout,
@@ -177,11 +178,24 @@ class PartnerService:
             )
         return amount
 
-    async def accrue_sponsor_share(self, sponsor: Sponsor, reward: float) -> float:
-        """Доля партнёра с выполненного задания его спонсора."""
+    async def accrue_sponsor_share(self, sponsor: Sponsor, reward: float, *, task_user: User) -> float:
+        """One commission per user/campaign, including after task revocation."""
         if not await self.settings.get_bool("partner.enabled", True):
             return 0.0
         if sponsor.partner_id is None or reward <= 0:
+            return 0.0
+        if not await UserRepo(self.session).lock_rewards_allowed(task_user.id):
+            return 0.0
+        # Legacy credits lack a user reference. A prior successful task is enough
+        # to deny retroactive/repeated commission, even if its completion was
+        # deleted. Malformed historical audit payloads must not abort a claim.
+        prior_task = await self.session.scalar(select(ActionLog.id).where(
+            ActionLog.user_tg_id == task_user.tg_id,
+            ActionLog.action == "task_done",
+            case((func.json_valid(ActionLog.payload) == 1,
+                  func.json_extract(ActionLog.payload, "$.sponsor_id")), else_=None) == sponsor.id,
+        ).limit(1))
+        if prior_task is not None:
             return 0.0
         partner = await self.repo.get(sponsor.partner_id)
         if partner is None or partner.is_deleted or partner.status != PartnerStatus.ACTIVE.value:
@@ -191,11 +205,15 @@ class PartnerService:
             return 0.0
         amount = float(from_units(settlement_units(decimal_amount(reward) * decimal_amount(percent) / 100)))
         if amount > 0:
-            await self.repo.add_earning(partner.id, amount, reason="partner_commission")
+            credited = await self.repo.add_earning(partner.id, amount, reason="partner_commission",
+                reference=f"task-share:{task_user.id}:{sponsor.id}")
+            if not credited:
+                return 0.0
             await ActionLogRepo(self.session).log(
                 user_tg_id=None,
                 action="partner_share",
-                payload={"partner_id": partner.id, "sponsor_id": sponsor.id, "amount": amount},
+                payload={"partner_id": partner.id, "sponsor_id": sponsor.id,
+                         "task_user_id": task_user.id, "amount": amount},
             )
         return amount
 

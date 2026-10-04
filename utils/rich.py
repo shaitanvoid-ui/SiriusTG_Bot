@@ -71,9 +71,9 @@ def render_rich_html(text: str) -> str:
             flush()
             blocks.append(protected[line])
         elif not blocks and not paragraph and "<b>" in line:
-            # Native heading supplies the hierarchy; decorative prefix/suffix
-            # glyphs only compete with it on a small Telegram screen.
-            heading = re.sub(r"^[^<]*?(?=<b>)", "", line)
+            # Keep meaningful section emoji in both native and fallback cards;
+            # remove only the legacy ornamental markers.
+            heading = re.sub(r"^[❖⟡✦]\s*", "", line)
             blocks.append(f"<h2>{heading}</h2>")
         elif line.startswith("❖") and "<b>" in line:
             flush()

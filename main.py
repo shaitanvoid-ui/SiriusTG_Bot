@@ -128,7 +128,17 @@ def _build_shutdown(health_runner: web.AppRunner, scheduler: AsyncIOScheduler, g
 
 
 def _setup_middlewares(dp: Dispatcher) -> None:
-    dp.callback_query.outer_middleware(CallbackAccessMiddleware())
+    access_mw = CallbackAccessMiddleware()
+    # Dispatcher installs FSM on Update first. Place the shared access boundary
+    # before it so rejected group/foreign-chat events never read or mutate FSM.
+    fsm_registered = dp.fsm in dp.update.outer_middleware
+    if fsm_registered:
+        dp.update.outer_middleware.unregister(dp.fsm)
+    dp.update.outer_middleware(access_mw)
+    if fsm_registered:
+        dp.update.outer_middleware(dp.fsm)
+    dp.message.outer_middleware(access_mw)
+    dp.callback_query.outer_middleware(access_mw)
     dp.message.outer_middleware(AntifraudMiddleware())
     dp.callback_query.outer_middleware(AntifraudMiddleware())
     db_mw = DbSessionMiddleware()

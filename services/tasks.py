@@ -146,7 +146,7 @@ class TasksService:
             from services.partner import PartnerService
 
             await PartnerService(self.session, self.settings).accrue_sponsor_share(
-                sponsor, reward
+                sponsor, reward, task_user=user
             )
 
         await ActionLogRepo(self.session).log(
