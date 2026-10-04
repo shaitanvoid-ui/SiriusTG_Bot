@@ -108,9 +108,9 @@ async def test_catalogue_paginates_and_releases_sqlite_lock_before_adapter():
     await gifts.cb_page(cb, session, fsm, svc)
     text = cb.message.edit_text.call_args.args[0]
     keyboard = cb.message.edit_text.call_args.kwargs["reply_markup"]
-    assert "Страница 2 из 3" in text and len(text) < 4096
-    assert "gift:view:16" in callbacks(keyboard) and "gift:view:30" in callbacks(keyboard)
-    assert "gift:view:15" not in callbacks(keyboard)
+    assert "Страница 2 из 7" in text and len(text) < 4096
+    gift_buttons = [value for value in callbacks(keyboard) if value.startswith("gift:view:")]
+    assert gift_buttons == [f"gift:view:{id}" for id in range(7, 13)]
     assert {"gift:page:0", "gift:page:2"} <= set(callbacks(keyboard))
 
 

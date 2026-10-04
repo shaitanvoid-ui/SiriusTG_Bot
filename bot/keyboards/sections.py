@@ -22,10 +22,10 @@ def kb_earn() -> InlineKeyboardMarkup:
 def kb_help() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=T.btn_help_instructions, callback_data="ins:open")
-    b.button(text=T.btn_help_support, callback_data="sup:open")
+    b.button(text=T.btn_help_support, callback_data="sup:open", style="primary")
     b.button(text=T.btn_help_review, callback_data="rev:intro")
     b.footer(text=T.btn_back_menu, callback_data="nav:menu")
-    b.adjust(2, 1, 1)
+    b.adjust(1, 1, 1, 1)
     return b.as_markup()
 
 
