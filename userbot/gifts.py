@@ -20,6 +20,7 @@ from telethon import TelegramClient, errors
 from telethon.tl import functions, types
 
 from userbot.client import TELETHON_OPERATION_ERRORS, disconnect, get_client, status_reason
+from utils.gift_labels import ordinary_gift_label
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +194,7 @@ def _ordinary_gift(raw: types.StarGift) -> Gift:
     elif raw.stars <= 0:
         reason = "gift_unsupported"
     return Gift(
-        gift_id=raw.id, title=raw.title or f"Подарок #{raw.id}", stars=raw.stars,
+        gift_id=raw.id, title=ordinary_gift_label(raw), stars=raw.stars,
         available=reason is None, reason=reason,
         kind="auction" if raw.auction else "collectible" if collectible else "ordinary",
         limited=bool(raw.limited), availability_remains=raw.availability_remains,

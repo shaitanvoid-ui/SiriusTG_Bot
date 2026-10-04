@@ -208,9 +208,11 @@ async def _scenario(folder: Path):
     try:
         # Catalogue/card/quote cannot reserve or buy anything.
         await tap("gift:open")
-        assert "&lt;Gift &amp; more&gt;" in api.last_html
+        catalogue = next(call for call in reversed(api.calls) if isinstance(call, EditMessageText))
+        assert any(b.text == "🎁 <Gift & more> · 25 ед." for row in catalogue.reply_markup.inline_keyboard for b in row)
         assert any(isinstance(call, EditMessageText) and call.rich_message is not None for call in api.calls)
         await tap("gift:view:7")
+        assert "&lt;Gift &amp; more&gt;" in api.last_html
         assert "25 Stars" in api.last_html and "25 ед." in api.last_html
         assert "15 ед." in api.last_html and "Подтверждённых друзей" in api.last_html
         assert await balances() == (1000000, 0) and adapter.calls == 0

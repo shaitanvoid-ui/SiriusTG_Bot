@@ -24,7 +24,7 @@ from bot.keyboards.daily import kb_daily
 from bot.keyboards.main_menu import kb_main_menu
 from bot.keyboards.referral import kb_referral
 from bot.handlers.gifts import render_gift, render_request
-from bot.keyboards.gifts import kb_gift, kb_request, kb_admin_gifts
+from bot.keyboards.gifts import kb_catalogue, kb_confirmation, kb_gift, kb_request, kb_admin_gifts, kb_gift_notification
 from bot.keyboards.sections import kb_profile
 from locales.ru import T
 from services.bonus import BonusView
@@ -92,8 +92,11 @@ def build_screens() -> list[tuple[str, str, object]]:
         level_emoji="🥈", level_name="Серебро", progress_bar=progress_bar(3, 10),
         progress_text=T.menu_progress_to_next.format(next_name="Золото", to_next_text="7 друзей"),
         ref_total=12, ref_confirmed=8, ref_matured=5, join_date="01.10.2026", streak=7)
-    gift = SimpleNamespace(id=1, title="Красное сердце", stars=15, available=True, kind="ordinary", reason=None,
+    gift = SimpleNamespace(id=1, title="💝 Сердце с лентой", stars=15, available=True, kind="ordinary", reason=None,
         limited=False, availability_remains=None, requires_premium=False)
+    catalogue_gifts = [gift, SimpleNamespace(id=2, title="🧸 Мишка", stars=15),
+        SimpleNamespace(id=3, title="🎁 Подарочная коробка", stars=25),
+        SimpleNamespace(id=4, title="💍 Кольцо", stars=100)]
     request = SimpleNamespace(id=42, title=gift.title, stars=15, cost_units=150000, status="waiting_funds",
         reserve_state="held", created_at=datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc),
         confirmation_kind=None, error_code="budget")
@@ -121,7 +124,10 @@ def build_screens() -> list[tuple[str, str, object]]:
         ("Награда дня · серия и раскрывающиеся условия", bonus, kb_bonus(can_claim=False)),
         ("Команда · копирование одним нажатием", referral, kb_referral(share_url="https://t.me/share/url?url=demo",invite_link=link)),
         ("Профиль · баланс и резерв", profile, kb_profile(is_partner=False)),
+        ("Каталог · узнаваемые обычные подарки", T.gift_catalogue.format(rows=T.gift_catalogue_summary.format(count=4)), kb_catalogue(catalogue_gifts)),
         ("Подарок · цена и условия", render_gift(gift, conditions={"minimum_units":150000, "min_refs":5, "daily_limit":5}), kb_gift(1, available=True)),
+        ("Подтверждение · понятная сумма", T.gift_confirmation.format(title=gift.title, stars=15, cost=stars(15)), kb_confirmation("preview-only", cost=stars(15))),
+        ("Уведомление · переход к заявке", T.gift_notification.format(title=gift.title, request_id=42, status=T.gift_status_succeeded), kb_gift_notification(42)),
         ("Заявка · честный статус ожидания", render_request(request), kb_request(request)),
         ("Владелец · очередь подарков", T.admin_gift_root, kb_admin_gifts()),
         ("Кликер · таймер и лимит", clicker, kb_clicker(can_click=True, cooldown_ms_left=240000)),

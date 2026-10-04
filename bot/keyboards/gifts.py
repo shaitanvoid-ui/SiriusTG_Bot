@@ -10,13 +10,14 @@ from aiogram.types import DisabledButton, InlineKeyboardMarkup
 from locales.ru import T
 from utils.keyboards import SiriusKeyboardBuilder
 from utils.ui import button_text
+from utils.gift_labels import gift_label
 
 
 def kb_catalogue(gifts: Sequence[Any], *, page: int = 0, pages: int = 1) -> InlineKeyboardMarkup:
     b = SiriusKeyboardBuilder()
     for gift in gifts:
-        title = button_text(gift.title, limit=24)
-        b.button(text=f"🎁 {title} · {gift.stars} Stars", callback_data=f"gift:view:{gift.id}")
+        title = button_text(gift_label(gift.title), limit=28)
+        b.button(text=f"{title} · {gift.stars} ед.", callback_data=f"gift:view:{gift.id}")
     pagination = 0
     if page > 0:
         b.button(text=T.btn_gift_page_back, callback_data=f"gift:page:{page - 1}")
@@ -54,7 +55,8 @@ def kb_confirmation(token: str, *, cost: str) -> InlineKeyboardMarkup:
 def kb_gift_history(requests: Sequence[Any]) -> InlineKeyboardMarkup:
     b = SiriusKeyboardBuilder()
     for request in requests:
-        b.button(text=f"#{request.id} · {request.title}", callback_data=f"gift:request:{request.id}")
+        title = button_text(gift_label(request.title), limit=28)
+        b.button(text=f"{title} · #{request.id}", callback_data=f"gift:request:{request.id}")
     b.button(text=T.btn_gift_refresh, callback_data="gift:history")
     b.footer(text=T.btn_gift_catalogue, callback_data="gift:open")
     b.adjust(*([1] * len(requests)), 1, 2)
@@ -87,6 +89,12 @@ def kb_gift_error() -> InlineKeyboardMarkup:
     b.button(text=T.btn_menu_help, callback_data="sup:open")
     b.footer(text=T.btn_back_menu, callback_data="nav:menu")
     b.adjust(2, 1, 1)
+    return b.as_markup()
+
+
+def kb_gift_notification(request_id: int) -> InlineKeyboardMarkup:
+    b = SiriusKeyboardBuilder()
+    b.button(text=T.btn_gift_open_request, callback_data=f"gift:request:{request_id}", style="primary")
     return b.as_markup()
 
 

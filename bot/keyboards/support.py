@@ -14,7 +14,7 @@ from utils.ui import button_text
 
 def kb_support_home() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text=T.btn_support_new, callback_data="sup:new")
+    b.button(text=T.btn_support_new, callback_data="sup:new", style="primary")
     b.button(text=T.btn_support_faq, callback_data="sup:faq")
     b.button(text=T.btn_support_my, callback_data="sup:my")
     b.footer(text=T.btn_back_help, callback_data="sec:help")

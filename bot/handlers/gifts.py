@@ -22,10 +22,11 @@ from userbot.gifts import GiftAdapterError
 from utils.telegram import ignore_unchanged
 from utils.tz import fmt_dt
 from utils.ui import clip, html_text
+from utils.gift_labels import gift_label
 
 
 router = Router(name="gifts")
-CATALOGUE_PAGE_SIZE = 15
+CATALOGUE_PAGE_SIZE = 6
 
 
 def internal_cost(units: int) -> str:
@@ -170,7 +171,7 @@ def render_gift(gift: Any, *, conditions: dict[str, int] | None = None) -> str:
     if gift.limited and gift.availability_remains is not None:
         rules.append(T.gift_limited_condition.format(count=gift.availability_remains))
     return T.gift_card.format(
-        title=html_text(clip(gift.title, 120)), stars=gift.stars,
+        title=html_text(clip(gift_label(gift.title), 120)), stars=gift.stars,
         cost=internal_cost(to_units(gift.stars)), availability=availability_text(gift),
         conditions="\n".join(rules),
     )
@@ -196,7 +197,7 @@ def render_request(request: Any, *, position: int = 0) -> str:
         elif code in {"sender_unavailable", "not_configured", "no_session", "not_authorized", "account_mismatch", "session_in_use", "connection_failed"}:
             detail = T.gift_error_account
     return T.gift_request.format(
-        id=request.id, title=html_text(clip(request.title, 120)), stars=request.stars,
+        id=request.id, title=html_text(clip(gift_label(request.title), 120)), stars=request.stars,
         cost=internal_cost(request.cost_units), status=status_text(status),
         reserve=getattr(T, f"gift_reserve_{request.reserve_state}", T.gift_reserve_unknown),
         created=fmt_dt(request.created_at), detail=detail,
@@ -225,10 +226,7 @@ async def _catalogue(callback: CallbackQuery, session: AsyncSession, state: FSMC
     pages = max(1, (len(catalogue) + CATALOGUE_PAGE_SIZE - 1) // CATALOGUE_PAGE_SIZE)
     page = min(max(page, 0), pages - 1)
     gifts = catalogue[page * CATALOGUE_PAGE_SIZE:(page + 1) * CATALOGUE_PAGE_SIZE]
-    rows = "\n\n".join(T.gift_catalogue_row.format(
-        marker="🎁" if gift.available else "▫", title=html_text(clip(gift.title, 120)),
-        stars=gift.stars, availability=availability_text(gift),
-    ) for gift in gifts) or T.gift_catalogue_empty
+    rows = T.gift_catalogue_summary.format(count=len(gifts)) if gifts else T.gift_catalogue_empty
     if pages > 1:
         rows += "\n\n" + T.gift_catalogue_page.format(page=page + 1, pages=pages)
     await _edit(callback, T.gift_catalogue.format(rows=rows), kb_catalogue(gifts, page=page, pages=pages))
@@ -292,7 +290,7 @@ async def cb_quote(callback: CallbackQuery, session: AsyncSession, state: FSMCon
         return
     await state.update_data(gift_quote_token=quote.id, gift_quote_expires_at=_expiration(quote.expires_at))
     await _edit(callback, T.gift_confirmation.format(
-        title=html_text(clip(quote.title, 120)), stars=quote.stars, cost=internal_cost(quote.cost_units),
+        title=html_text(clip(gift_label(quote.title), 120)), stars=quote.stars, cost=internal_cost(quote.cost_units),
     ), kb_confirmation(quote.id, cost=internal_cost(quote.cost_units)))
     await callback.answer()
 
@@ -331,7 +329,7 @@ async def cb_history(callback: CallbackQuery, session: AsyncSession, state: FSMC
         await _error(callback, error, svc)
         return
     rows = "\n\n".join(T.gift_history_row.format(
-        id=request.id, title=html_text(clip(request.title, 80)),
+        id=request.id, title=html_text(clip(gift_label(request.title), 80)),
         status=status_text(request.status), cost=internal_cost(request.cost_units),
     ) for request in requests) or T.gift_history_empty
     await _edit(callback, T.gift_history.format(rows=rows), kb_gift_history(requests))

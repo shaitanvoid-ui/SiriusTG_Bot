@@ -12,6 +12,9 @@ from db.gift_models import GiftRequest
 from locales.ru import T
 from services.gifts import GiftService
 from services.settings import SettingsService
+from bot.keyboards.gifts import kb_gift_notification
+from utils.gift_labels import gift_label
+from utils.ui import html_text
 
 log = get_logger(__name__)
 
@@ -41,10 +44,12 @@ class GiftWorker:
             if alert_owner:
                 req.alerted_key = alert_key
             request_id, recipient, status = req.id, req.recipient_tg_id, req.status
+            title = gift_label(req.title)
         try:
             if notify_user:
                 await self.bot.send_message(recipient, T.gift_notification.format(
-                    request_id=request_id, status=T.gift_statuses[status]), disable_notification=True)
+                    request_id=request_id, title=html_text(title), status=T.gift_statuses[status]),
+                    reply_markup=kb_gift_notification(request_id), disable_notification=True)
         except TelegramAPIError as exc:
             async with self.service.transaction() as s:
                 req = await s.get(GiftRequest, request_id)
